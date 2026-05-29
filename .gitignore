@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime artifacts
+*.db
+*.sqlite
+*.sqlite3
+maya_journal.db
+logs/
+*.log
