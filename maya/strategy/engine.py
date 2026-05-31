@@ -1,0 +1,86 @@
+"""Layer 3 orchestrator.
+
+Builds rolling context, runs the three setups, scores confluence, applies the
+optional LLM veto, and emits at most one :class:`TradeIntent` per candle. The
+engine NEVER places orders — it only produces intents for Layer 4 to screen.
+"""
+from __future__ import annotations
+
+from collections import deque
+
+from loguru import logger
+
+from maya.config import RiskLimits, Settings
+from maya.signals.models import SignalObject
+from maya.strategy import setups as setup_mod
+from maya.strategy.confluence import score_confluence
+from maya.strategy.llm_filter import LLMFilter
+from maya.strategy.models import TradeIntent
+from maya.strategy.setups import SetupContext
+
+
+class StrategyEngine:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.highs: deque[float] = deque(maxlen=15)
+        self.lows: deque[float] = deque(maxlen=15)
+        self.closes: deque[float] = deque(maxlen=30)
+        self.llm = LLMFilter(settings)
+
+    def _context(self, sig: SignalObject) -> SetupContext:
+        prev_high = max(self.highs) if self.highs else sig.high
+        prev_low = min(self.lows) if self.lows else sig.low
+        self.highs.append(sig.high)
+        self.lows.append(sig.low)
+        self.closes.append(sig.price)
+
+        # A sweep = wick beyond the prior swing but close back inside (spec 6.2).
+        swept_high = sig.high > prev_high and sig.price < prev_high
+        swept_low = sig.low < prev_low and sig.price > prev_low
+        # A breakout = close decisively beyond the prior swing.
+        breakout_up = sig.price > prev_high
+        breakout_down = sig.price < prev_low
+
+        return SetupContext(
+            swing_high_15m=prev_high,
+            swing_low_15m=prev_low,
+            range_pct=sig.range_pct,
+            swept_high=swept_high,
+            swept_low=swept_low,
+            breakout_up=breakout_up,
+            breakout_down=breakout_down,
+        )
+
+    def evaluate(self, sig: SignalObject) -> TradeIntent | None:
+        ctx = self._context(sig)
+
+        candidates: list[TradeIntent] = []
+        for setup in setup_mod.ALL_SETUPS:
+            intent = setup(sig, ctx)
+            if intent is not None:
+                candidates.append(intent)
+
+        best: TradeIntent | None = None
+        for intent in candidates:
+            score, factors = score_confluence(intent, sig)
+            intent.confluence_score = score
+            intent.confluences = factors
+            if score < RiskLimits.MIN_CONFLUENCE_SCORE:
+                logger.debug("setup {} below confluence ({} < {})",
+                             intent.setup_name, score, RiskLimits.MIN_CONFLUENCE_SCORE)
+                continue
+            if best is None or score > best.confluence_score:
+                best = intent
+
+        if best is None:
+            return None
+
+        approved, reason = self.llm.review(best, sig)
+        if not approved:
+            logger.info("LLM vetoed {} trade: {}", best.setup_name, reason)
+            return None
+
+        logger.info("Trade intent: {} {} @ {:.2f} score={} ({})",
+                    best.direction, best.setup_name, best.entry_price,
+                    best.confluence_score, ",".join(best.confluences))
+        return best

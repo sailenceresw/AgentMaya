@@ -1,0 +1,19 @@
+# Core graph runtime
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# Data / math
+pandas>=2.0
+numpy>=1.24
+
+# Config & logging
+pydantic>=2.5
+pydantic-settings>=2.1
+python-dotenv>=1.0
+loguru>=0.7
+
+# Exchange integration (live / testnet — only used when MAYA_MODE != sim)
+ccxt>=4.2.0
+
+# Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true)
+anthropic>=0.39.0
