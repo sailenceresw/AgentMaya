@@ -6,6 +6,7 @@ so ``python -m maya`` runs end-to-end with no API keys and no real orders.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 
 from loguru import logger
@@ -36,9 +37,45 @@ def _guard_live(settings: Settings) -> None:
         sys.exit(2)
 
 
-def main() -> None:
+def check_connection(settings: Settings) -> int:
+    """Verify connectivity to the Binance API and print a report. Returns exit code."""
+    from maya.data.binance_client import connectivity_check, to_ccxt_symbol
+
+    logger.info("Checking Binance connectivity (mode={}, symbol={} -> {}) ...",
+                settings.mode.value, settings.symbol, to_ccxt_symbol(settings.symbol))
+    res = connectivity_check(settings)
+    if not res.ok:
+        logger.error("Binance connection FAILED: {}", res.detail)
+        logger.error("Could not reach the Binance API. Common causes:")
+        logger.error("  1. Restricted egress (proxy/firewall). Allow fapi.binance.com "
+                     "and testnet.binancefuture.com, or run on a host with Binance access.")
+        logger.error("  2. Region block — Binance Futures is unavailable in some "
+                     "jurisdictions (e.g. the US). Use a permitted region/VPS.")
+        logger.error("  3. Wrong mode/keys — testnet needs testnet keys; live needs "
+                     "futures-enabled keys.")
+        return 1
+    logger.info("Binance reachable — {}", res.detail)
+    if res.last_price is not None:
+        logger.info("Last {} price: {}", settings.symbol, res.last_price)
+    if res.authenticated:
+        logger.info("Account authenticated. USDT equity: {}", res.equity_usdt)
+    else:
+        logger.info("No API keys set — public data only (fine for sim/paper data).")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="maya", description="Maya order-flow trading agent")
+    parser.add_argument("--check", action="store_true",
+                        help="Verify Binance API connectivity and exit")
+    args = parser.parse_args(argv)
+
     settings = get_settings()
     _configure_logging(settings)
+
+    if args.check:
+        sys.exit(check_connection(settings))
+
     _guard_live(settings)
 
     logger.info("=== Maya Trading System === mode={} symbol={} tf={}",

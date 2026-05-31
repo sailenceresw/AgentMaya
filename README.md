@@ -18,9 +18,21 @@ python -m maya
 # Watch a trade flow through every layer via a scripted setup:
 MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya
 
+# Verify the Binance API connection (needs network access to Binance):
+MAYA_MODE=paper python -m maya --check
+
 # Tests:
 python -m pytest -q
 ```
+
+### Connecting to Binance
+
+The agent uses `ccxt` to reach **Binance USD-M Futures** (symbols auto-convert
+to ccxt's `BTC/USDT:USDT` form). Run `python -m maya --check` to verify
+connectivity and credentials before trading. Modes: `paper` (real data,
+simulated orders), `testnet` (sandbox orders), `live` (real money, gated behind
+an interlock). See [`docs/RUNNING.md`](docs/RUNNING.md#connecting-to-binance)
+for keys, permissions, and network/region requirements.
 
 ## Implementation
 

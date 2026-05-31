@@ -47,6 +47,47 @@ Trade intent: short liquidity_sweep_choch @ 66800.00 score=7 (...)
 Trade closed: liquidity_sweep_choch win pnl=25.77
 ```
 
+## Connecting to Binance
+
+The agent talks to **Binance USD-M Futures** via `ccxt`. Symbols are converted
+to ccxt's unified format automatically (`BTCUSDT` → `BTC/USDT:USDT`), and order
+amounts/prices are rounded to the exchange's filters.
+
+**Verify the connection before trading:**
+
+```bash
+# Public market data only (no keys) — confirms you can reach Binance:
+MAYA_MODE=paper python -m maya --check
+
+# Full check including the account endpoint (needs keys):
+MAYA_MODE=testnet BINANCE_API_KEY=... BINANCE_API_SECRET=... python -m maya --check
+```
+
+A healthy check prints the last price and (if keyed) your USDT equity. If it
+fails, the output lists the likely cause:
+
+1. **Restricted egress** — a proxy/firewall blocking outbound traffic. Allow
+   `fapi.binance.com` and `testnet.binancefuture.com`, or run on a host with
+   Binance access. (Cloud/CI environments often block these by default.)
+2. **Region block** — Binance Futures is unavailable in some jurisdictions
+   (e.g. the US). Use a permitted region/VPS (the spec recommends Tokyo/Singapore
+   for latency).
+3. **Wrong mode/keys** — testnet needs *testnet* keys; live needs
+   futures-enabled keys.
+
+### API keys
+
+Put credentials in `.env` (copied from `.env.example`); never commit them:
+
+```ini
+BINANCE_API_KEY=your_key
+BINANCE_API_SECRET=your_secret
+```
+
+Use a key with **futures permission only**, **withdrawals disabled**, and an
+**IP whitelist** (spec section 11). For `testnet`, create keys at
+<https://testnet.binancefuture.com>.
+
 ## Run modes
 
 Set `MAYA_MODE` (or edit `.env`, copied from `.env.example`):

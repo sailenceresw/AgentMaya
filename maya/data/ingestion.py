@@ -156,29 +156,16 @@ class CCXTFeed:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.tf_ms = _TF_MS.get(settings.timeframe, 60_000)
-        self._exchange = self._build_exchange()
+        from maya.data.binance_client import build_exchange, to_ccxt_symbol
+
+        self.symbol = to_ccxt_symbol(settings.symbol)
+        self._exchange = build_exchange(settings)
+        self._exchange.load_markets()
         self._last_ts: int | None = None
-
-    def _build_exchange(self):
-        import ccxt  # imported lazily so sim mode needs no ccxt install
-
-        opts = {
-            "apiKey": self.settings.binance_api_key,
-            "secret": self.settings.binance_api_secret,
-            "enableRateLimit": True,
-            "options": {"defaultType": "future"},
-        }
-        ex = ccxt.binanceusdm(opts)
-        if self.settings.mode.value == "testnet":
-            ex.set_sandbox_mode(True)
-            logger.warning("CCXTFeed running against Binance TESTNET sandbox")
-        return ex
 
     def _fetch_trades_for(self, since: int) -> list[Trade]:
         try:
-            raw = self._exchange.fetch_trades(
-                self.settings.symbol, since=since, limit=1000
-            )
+            raw = self._exchange.fetch_trades(self.symbol, since=since, limit=1000)
         except Exception as exc:  # noqa: BLE001 - degrade gracefully
             logger.warning("trade fetch failed: {}", exc)
             return []
@@ -198,7 +185,7 @@ class CCXTFeed:
         limit = self.settings.max_candles or 10**9
         while emitted < limit:
             ohlcv = self._exchange.fetch_ohlcv(
-                self.settings.symbol, timeframe=self.settings.timeframe, limit=2
+                self.symbol, timeframe=self.settings.timeframe, limit=2
             )
             if not ohlcv:
                 time.sleep(1)
