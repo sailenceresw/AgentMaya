@@ -52,6 +52,35 @@ class RiskManager:
             equity=equity, start_equity=equity,
             day_start_equity=equity, week_start_equity=equity,
         )
+        self._day: int | None = None
+        self._week: int | None = None
+
+    # -- period rollover --------------------------------------------------- #
+    def roll_periods(self, now_ts: int) -> None:
+        """Reset daily/weekly counters and baselines when the clock rolls over.
+
+        Without this the daily trade count and loss baselines would never reset,
+        so the system would lock up after the first day. A daily/cooldown HALT is
+        lifted on a new day; ``check_kill_switch`` (run immediately after) will
+        re-halt at once if a weekly limit or the equity floor is still breached.
+        """
+        day = now_ts // 86_400_000
+        week = day // 7
+        if self._day is None:
+            self._day, self._week = day, week
+            return
+
+        if day != self._day:
+            self._day = day
+            self.account.trades_today = 0
+            self.account.day_start_equity = self.account.equity
+            self.account.consecutive_losses = 0
+            if self.account.state in (SystemState.HALTED, SystemState.COOLDOWN):
+                self.account.state = SystemState.RUNNING
+                self.account.halt_reasons = []
+        if week != self._week:
+            self._week = week
+            self.account.week_start_equity = self.account.equity
 
     # -- kill switch ------------------------------------------------------- #
     def _halt(self, reason: str) -> None:

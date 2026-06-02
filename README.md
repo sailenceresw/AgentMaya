@@ -21,6 +21,9 @@ MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya
 # Verify the Binance API connection (needs network access to Binance):
 MAYA_MODE=paper python -m maya --check
 
+# Backtest the strategy (offline demo; or --source csv/ccxt for real data):
+python -m maya.backtest --source demo --days 250
+
 # Tests:
 python -m pytest -q
 ```
@@ -51,9 +54,10 @@ maya/
   risk/        # L4 hard limits, kill switch, position sizing
   execution/   # L5 paper & ccxt brokers, position management
   journal/     # L6 SQLite trade journal + performance metrics
+  backtest/    # event-driven backtester + go/no-go gates (data, engine, metrics)
   graph.py     # LangGraph StateGraph wiring the layers
   run.py       # ingestion loop / CLI entrypoint
-tests/         # indicators, risk limits, end-to-end pipeline
+tests/         # indicators, risk limits, Binance client, backtest, end-to-end
 ```
 
 This is an **MVP**: it runs end-to-end in safe simulation mode by default. Live

@@ -47,6 +47,34 @@ Trade intent: short liquidity_sweep_choch @ 66800.00 score=7 (...)
 Trade closed: liquidity_sweep_choch win pnl=25.77
 ```
 
+## Backtesting
+
+Before risking any capital, evaluate the strategy on historical data. The
+backtester replays candles through the **same** signal → strategy → risk →
+execution pipeline the live agent uses, then reports the spec's go/no-go gates
+(§14.1): profit factor > 1.5, max drawdown < 20%, Sharpe > 1.0, ≥ 200 trades.
+
+```bash
+# Offline demo (no network) — proves the machinery; NOT a real edge:
+python -m maya.backtest --source demo --days 250
+
+# Real evaluation from a CSV of historical klines:
+python -m maya.backtest --source csv --csv path/to/ohlcv.csv --equity 1000
+
+# Download history from Binance and backtest (needs Binance network access):
+python -m maya.backtest --source ccxt --days 365 --symbol BTCUSDT --timeframe 1m
+```
+
+CSV columns (header optional): `timestamp, open, high, low, close, volume` —
+this matches Binance kline dumps from <https://data.binance.vision>.
+
+> **Two honest caveats.** (1) The `demo` source replays one scripted winning
+> setup across many days, so its glowing numbers are meaningless — it only
+> proves the backtester runs. (2) Klines carry no per-trade data, so CVD is
+> *approximated* from where each candle closes in its range. A true order-flow
+> backtest needs tick/aggTrade data (spec §4.2); treat kline-based results as
+> indicative, then confirm on paper/testnet.
+
 ## Connecting to Binance
 
 The agent talks to **Binance USD-M Futures** via `ccxt`. Symbols are converted

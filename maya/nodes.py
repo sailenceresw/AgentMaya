@@ -62,6 +62,7 @@ class TradingNodes:
 
     def risk_node(self, state: TradingState) -> TradingState:
         candle = state["candle"]
+        self.risk.roll_periods(candle.timestamp)
         self.risk.check_kill_switch(candle.timestamp)
         halted = self.risk.account.state is SystemState.HALTED
         intent = state.get("intent")
