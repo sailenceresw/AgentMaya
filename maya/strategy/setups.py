@@ -40,6 +40,9 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
     # The absorption must occur at a value-area extreme (spec 6.2 Setup 1).
     at_value = lambda boundary: abs(ab.level - boundary) / price <= 0.0015
 
+    # expected_rr must reflect the EXECUTED target (TP1), since the position is
+    # closed in full at TP1 — not the further TP2. Otherwise the risk gate
+    # screens against an inflated R:R the trade never realises.
     if ab.side == "bullish" and at_value(vp.val):
         entry = price
         sl = ab.level * (1 - 0.003)
@@ -47,7 +50,7 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
         tp2 = vp.vah
         if _rr(entry, sl, tp1) >= 4.0:
             return TradeIntent(sig.symbol, "long", "value_area_absorption",
-                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp2), sig.timestamp)
+                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp1), sig.timestamp)
 
     if ab.side == "bearish" and at_value(vp.vah):
         entry = price
@@ -56,7 +59,7 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
         tp2 = vp.val
         if _rr(entry, sl, tp1) >= 4.0:
             return TradeIntent(sig.symbol, "short", "value_area_absorption",
-                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp2), sig.timestamp)
+                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp1), sig.timestamp)
     return None
 
 
@@ -96,11 +99,16 @@ def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | 
     price = sig.price
     rng = (ctx.swing_high_15m - ctx.swing_low_15m)
     mid = (ctx.swing_high_15m + ctx.swing_low_15m) / 2
+    # Measured-move target. The spec says "range height x 2 minimum"; with a
+    # mid-range stop a 2x target caps R:R near 4:1, which can't satisfy the
+    # 1:5 minimum, so use a larger measured move. The R:R gate below then only
+    # admits breakouts that close near the range top (small risk).
+    move = rng * 3.5
 
     if ctx.breakout_up and sig.cvd_1m > 0:
         entry = price
         sl = mid
-        tp1 = price + rng * 2
+        tp1 = price + move
         if _rr(entry, sl, tp1) >= 5.0:
             return TradeIntent(sig.symbol, "long", "compression_breakout",
                                entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
@@ -108,7 +116,7 @@ def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | 
     if ctx.breakout_down and sig.cvd_1m < 0:
         entry = price
         sl = mid
-        tp1 = price - rng * 2
+        tp1 = price - move
         if _rr(entry, sl, tp1) >= 5.0:
             return TradeIntent(sig.symbol, "short", "compression_breakout",
                                entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)

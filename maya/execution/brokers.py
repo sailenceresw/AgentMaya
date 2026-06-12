@@ -78,7 +78,10 @@ class CCXTBroker:
             self.ex.create_order(sym, "limit", side, qty, self._price(intent.entry_price),
                                  {"timeInForce": "GTC"})
             # Stop-loss held AT the exchange, triggered on MARK price (spec 8.2.2).
-            self.ex.create_order(sym, "STOP_MARKET", close_side, qty, None, {
+            # With closePosition=True the amount MUST be omitted — Binance rejects
+            # a quantity alongside closePosition (-1106), which would leave the
+            # position with no stop.
+            self.ex.create_order(sym, "STOP_MARKET", close_side, None, None, {
                 "stopPrice": self._price(intent.stop_loss),
                 "closePosition": True, "workingType": "MARK_PRICE",
             })

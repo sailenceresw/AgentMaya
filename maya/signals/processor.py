@@ -42,8 +42,18 @@ class SignalProcessor:
 
         vols = np.array([c.volume for c in candles])
         avg_volume = float(vols.mean()) if len(vols) else candle.volume
-        closes = np.array([c.close for c in candles])
-        range_pct = float((closes.max() - closes.min()) / max(closes.mean(), 1e-9)) if len(closes) > 1 else 0.0
+        # Compression measure = high-low range over the ~30 candles BEFORE the
+        # current one (spec Setup 3: "range < 0.3% for 30+ candles"). It must
+        # exclude the current candle, otherwise a breakout candle expands the
+        # range and breaks its own compression — making the setup unreachable.
+        prior = candles[:-1][-30:]
+        if len(prior) >= 2:
+            hi = max(c.high for c in prior)
+            lo = min(c.low for c in prior)
+            mean_close = float(np.mean([c.close for c in prior])) or 1e-9
+            range_pct = (hi - lo) / mean_close
+        else:
+            range_pct = 0.0
 
         return SignalObject(
             timestamp=candle.timestamp,

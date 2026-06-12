@@ -90,7 +90,10 @@ class TradeJournal:
             "total_pnl_usdt": round(total_pnl, 2),
             "gross_profit": round(gross_profit, 2),
             "gross_loss": round(gross_loss, 2),
-            "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else float("inf"),
+            # Cap at a finite sentinel when there are no losses, so it doesn't
+            # propagate `inf` into reports/metrics or imply an infinite edge.
+            "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss
+                             else (999.99 if gross_profit > 0 else 0.0),
             "avg_win": round(avg_win, 2),
             "avg_loss": round(avg_loss, 2),
             "expectancy": round(total_pnl / n, 2),

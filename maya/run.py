@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 from loguru import logger
 
-from maya.config import RunMode, Settings, get_settings
+from maya.config import RiskLimits, RunMode, Settings, get_settings
 from maya.data.ingestion import build_feed
 from maya.graph import build_graph
 from maya.journal.store import TradeJournal
@@ -88,10 +89,23 @@ def main(argv: list[str] | None = None) -> None:
     graph = build_graph(nodes)
     feed = build_feed(settings)
 
+    tf_seconds = {"1m": 60, "5m": 300, "15m": 900}.get(settings.timeframe, 60)
     processed = 0
     last_candle = None
+    prev_wall = time.monotonic()
     try:
         for candle in feed.candles():
+            now_wall = time.monotonic()
+            # Data-feed staleness circuit breaker (spec §7.3). On real feeds, if
+            # a new candle takes far longer than its interval to arrive, halt
+            # rather than trade on a stalled feed. (Sim/backtest use historical
+            # timestamps, so this only applies to real-data modes.)
+            if settings.uses_real_data and \
+                    now_wall - prev_wall > tf_seconds + RiskLimits.DATA_STALE_SECONDS:
+                logger.critical("Data feed stalled ({:.0f}s gap).", now_wall - prev_wall)
+                nodes.risk.check_kill_switch(candle.timestamp, data_stale=True)
+            prev_wall = now_wall
+
             graph.invoke({"candle": candle})
             last_candle = candle
             processed += 1

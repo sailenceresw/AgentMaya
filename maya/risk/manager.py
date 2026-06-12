@@ -75,7 +75,9 @@ class RiskManager:
             self.account.trades_today = 0
             self.account.day_start_equity = self.account.equity
             self.account.consecutive_losses = 0
-            if self.account.state in (SystemState.HALTED, SystemState.COOLDOWN):
+            # Lift a daily-loss / data HALT on the new day. Leave an active
+            # COOLDOWN to expire on its own timer (it may run past midnight).
+            if self.account.state is SystemState.HALTED:
                 self.account.state = SystemState.RUNNING
                 self.account.halt_reasons = []
         if week != self._week:
@@ -117,7 +119,10 @@ class RiskManager:
         if acc.state is SystemState.COOLDOWN and now_ts < acc.cooldown_until_ts:
             return RiskDecision(False, "in cooldown")
         if acc.state is SystemState.COOLDOWN:
-            acc.state = SystemState.RUNNING  # cooldown elapsed
+            # Cooldown served — resume AND clear the streak, otherwise the next
+            # single loss re-trips the limit and we loop cooldown forever.
+            acc.state = SystemState.RUNNING
+            acc.consecutive_losses = 0
 
         if acc.open_positions >= RiskLimits.MAX_CONCURRENT_POSITIONS:
             return RiskDecision(False, "max concurrent positions")

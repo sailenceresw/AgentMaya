@@ -91,6 +91,8 @@ def test_ccxt_broker_places_entry_sl_tp(monkeypatch):
     assert entry["side"] == "buy" and entry["amount"] == 0.123     # rounded
     assert sl["side"] == "sell" and sl["params"]["closePosition"] is True
     assert sl["params"]["workingType"] == "MARK_PRICE"
+    # closePosition=True requires NO amount, else Binance rejects with -1106.
+    assert sl["amount"] is None
     assert tp["side"] == "sell" and tp["params"]["reduceOnly"] is True
 
 

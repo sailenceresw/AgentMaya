@@ -106,14 +106,20 @@ def detect_absorption(candles: list[Candle], cluster_pct: float = 0.0015,
     def cluster(levels: list[tuple[float, float]], window: float):
         if len(levels) < min_wicks:
             return None
-        prices = np.array([p for p, _ in levels])
+        # Choose the DENSEST qualifying cluster (most wicks, then highest
+        # volume), not just the first reference that happens to qualify.
+        best = None
         for ref, _ in levels:
             members = [(p, s) for p, s in levels if abs(p - ref) <= window]
-            if len(members) >= min_wicks:
+            if len(members) < min_wicks:
+                continue
+            count = len(members)
+            tot_strength = sum(s for _, s in members)
+            if best is None or (count, tot_strength) > (best[0], best[1]):
                 lvl = float(np.mean([p for p, _ in members]))
                 strength = float(min(1.0, np.mean([s for _, s in members]) / 3.0))
-                return lvl, strength
-        return None
+                best = (count, tot_strength, lvl, strength)
+        return (best[2], best[3]) if best else None
 
     window = ref_price * cluster_pct
     bull = cluster(lower_levels, window)
