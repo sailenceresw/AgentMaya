@@ -21,6 +21,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--symbol", default=None)
     p.add_argument("--timeframe", default=None)
     p.add_argument("--equity", type=float, default=None, help="Starting equity (USDT)")
+    p.add_argument("--plot", metavar="PATH", default=None,
+                   help="Save an equity-curve + drawdown chart (PNG) to PATH")
     args = p.parse_args(argv)
 
     logger.remove()
@@ -55,6 +57,17 @@ def main(argv: list[str] | None = None) -> None:
         print("!" * 60)
 
     print(format_report(result.metrics))
+
+    if args.plot:
+        try:
+            from maya.backtest.plot import save_equity_plot
+            save_equity_plot(result.equity_curve, result.metrics, args.plot)
+            logger.info("Saved equity/drawdown chart to {}", args.plot)
+        except ImportError:
+            logger.error("Plotting needs matplotlib: pip install matplotlib")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Could not save plot: {}", exc)
+
     sys.exit(0)  # report-only; never errors on NO-GO
 
 

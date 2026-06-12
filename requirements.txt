@@ -17,3 +17,6 @@ ccxt>=4.2.0
 
 # Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true)
 anthropic>=0.39.0
+
+# Optional plotting for backtests (only imported when --plot is used)
+matplotlib>=3.7

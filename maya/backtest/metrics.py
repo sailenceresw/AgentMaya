@@ -51,9 +51,12 @@ def _sharpe(daily_equity: list[float]) -> float:
     eq = np.asarray(daily_equity, dtype=float)
     rets = np.diff(eq) / eq[:-1]
     sd = rets.std(ddof=1)
-    if sd == 0:
+    # Degenerate near-zero variance (e.g. perfectly consistent synthetic wins)
+    # would otherwise produce an absurd Sharpe from float noise. Treat a
+    # vanishing std relative to the mean as undefined, and clamp the result.
+    if sd < 1e-9 or sd < abs(rets.mean()) * 1e-6:
         return 0.0
-    return float(rets.mean() / sd * np.sqrt(365))
+    return float(np.clip(rets.mean() / sd * np.sqrt(365), -100.0, 100.0))
 
 
 def compute(journal_metrics: dict, equity_ts: list[tuple[int, float]],

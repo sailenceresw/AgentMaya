@@ -68,6 +68,19 @@ python -m maya.backtest --source ccxt --days 365 --symbol BTCUSDT --timeframe 1m
 CSV columns (header optional): `timestamp, open, high, low, close, volume` —
 this matches Binance kline dumps from <https://data.binance.vision>.
 
+**Download real history into a CSV** (needs Binance network access):
+
+```bash
+python -m maya.data.download --days 365 --symbol BTCUSDT --timeframe 1m --out btc.csv
+python -m maya.backtest --source csv --csv btc.csv --plot equity.png
+```
+
+**Plot the equity curve + drawdown** with `--plot PATH` (needs `matplotlib`):
+
+```bash
+python -m maya.backtest --source csv --csv btc.csv --plot equity.png
+```
+
 > **Two honest caveats.** (1) The `demo` source replays one scripted winning
 > setup across many days, so its glowing numbers are meaningless — it only
 > proves the backtester runs. (2) Klines carry no per-trade data, so CVD is
