@@ -89,9 +89,11 @@ def main(argv: list[str] | None = None) -> None:
     feed = build_feed(settings)
 
     processed = 0
+    last_candle = None
     try:
         for candle in feed.candles():
             graph.invoke({"candle": candle})
+            last_candle = candle
             processed += 1
             if nodes.risk.account.state.value == "halted":
                 logger.critical("System HALTED ({}). Stopping new candles.",
@@ -100,12 +102,12 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
-        # Flatten any open position at the last seen price (clean shutdown).
-        if nodes.execution.has_position:
-            last_price = nodes.execution.position.entry_price
-            result = nodes.execution.force_close(last_price, 0)
+        # Flatten any open position at the last market price (clean shutdown).
+        if nodes.execution.has_position and last_candle is not None:
+            result = nodes.execution.force_close(last_candle.close, last_candle.timestamp)
             if result:
                 journal.record(result, result.position.confluences)
+                nodes.risk.on_trade_closed(result.pnl_usdt, last_candle.timestamp)
 
         _report(nodes, journal, processed)
         journal.close()

@@ -22,6 +22,7 @@ class Position:
     rr_planned: float
     confluences: list[str] = field(default_factory=list)
     moved_to_breakeven: bool = False
+    initial_stop_loss: float = 0.0  # original stop, for true R-multiple accounting
 
     def unrealized_pnl(self, price: float) -> float:
         diff = price - self.entry_price

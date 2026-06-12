@@ -54,10 +54,14 @@ class TradingNodes:
 
     def strategy_node(self, state: TradingState) -> TradingState:
         signal = state.get("signal")
-        # No new entries while a position is open (single-position system).
-        if signal is None or self.execution.has_position:
+        if signal is None:
             return {"intent": None}
-        intent = self.strategy.evaluate(signal)
+        # Always update rolling swing context, even while a position is open.
+        ctx = self.strategy.observe(signal)
+        # No new entries while a position is open (single-position system).
+        if self.execution.has_position:
+            return {"intent": None}
+        intent = self.strategy.evaluate(signal, ctx)
         return {"intent": intent}
 
     def risk_node(self, state: TradingState) -> TradingState:

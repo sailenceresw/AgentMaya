@@ -27,7 +27,9 @@ class StrategyEngine:
         self.closes: deque[float] = deque(maxlen=30)
         self.llm = LLMFilter(settings)
 
-    def _context(self, sig: SignalObject) -> SetupContext:
+    def observe(self, sig: SignalObject) -> SetupContext:
+        """Update the rolling swing context. Must be called on EVERY candle —
+        including while a position is open — so swing references never go stale."""
         prev_high = max(self.highs) if self.highs else sig.high
         prev_low = min(self.lows) if self.lows else sig.low
         self.highs.append(sig.high)
@@ -51,9 +53,7 @@ class StrategyEngine:
             breakout_down=breakout_down,
         )
 
-    def evaluate(self, sig: SignalObject) -> TradeIntent | None:
-        ctx = self._context(sig)
-
+    def evaluate(self, sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
         candidates: list[TradeIntent] = []
         for setup in setup_mod.ALL_SETUPS:
             intent = setup(sig, ctx)

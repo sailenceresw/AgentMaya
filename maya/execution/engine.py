@@ -58,6 +58,7 @@ class ExecutionEngine:
             leverage=decision.leverage, opened_ts=ts,
             confluence_score=intent.confluence_score, rr_planned=intent.expected_rr,
             confluences=list(intent.confluences),
+            initial_stop_loss=intent.stop_loss,
         )
         return True
 
@@ -67,7 +68,8 @@ class ExecutionEngine:
         gross = pos.pnl_at(exit_price)
         fees = pos.notional * FEE_RATE * 2  # entry + exit
         pnl = gross - fees
-        risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
+        # R-multiple against the ORIGINAL stop, not a moved-to-breakeven one.
+        risk = abs(pos.entry_price - pos.initial_stop_loss) * pos.quantity
         rr = (gross / risk) if risk else 0.0
         result = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
         self.broker.close_position(pos, exit_price, reason)
