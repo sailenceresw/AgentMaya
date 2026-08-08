@@ -1,0 +1,34 @@
+# Secrets — never commit. .env.example is the template that IS tracked.
+.env
+.env.*
+!.env.example
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Python bytecode / tooling caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Trade journal — real trading history, machine-local state, not source
+*.db
+*.sqlite
+*.sqlite3
+
+# Cached historical klines downloaded by the backtester
+data/
+
+# Agent skill packs installed by `npx skills add` (reinstallable, not source)
+.agents/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

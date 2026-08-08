@@ -1,0 +1,199 @@
+"""Tests for the risk layer — the most safety-critical code (spec section 7)."""
+from maya.check_connection import (
+    _extract_balance,
+    _extract_orders,
+    _extract_positions,
+    _extract_price,
+    _extract_server_time,
+    run_diagnostics,
+)
+from maya.config import RiskLimits, RunMode, Settings
+from maya.risk.manager import RiskManager, SystemState
+from maya.risk.sizing import calculate_position_notional
+from maya.strategy.models import TradeIntent
+
+
+def _settings():
+    return Settings(mode=RunMode.SIM, start_equity=1000)
+
+
+def test_position_sizing_caps_at_notional_limit():
+    # Tiny stop distance would imply huge notional -> must be capped at 5x equity.
+    notional = calculate_position_notional(1000, 0.5, entry=100, sl=99.99)
+    assert notional <= 1000 * RiskLimits.POSITION_NOTIONAL_CAP_MULT
+
+
+def test_position_sizing_uses_fixed_usd_risk():
+    notional = calculate_position_notional(1000, RiskLimits.MAX_RISK_PER_TRADE_USD, entry=100, sl=95)
+    # risk = $20; sl distance = 5% => notional = 400
+    assert abs(notional - 400) < 1e-6
+
+
+def _intent(rr=5.0, take_profit_1=120):
+    return TradeIntent("BTCUSDT", "long", "value_area_absorption",
+                       entry_price=100, stop_loss=95, take_profit_1=take_profit_1,
+                       take_profit_2=125, confluence_score=8, expected_rr=rr)
+
+
+def test_rejects_low_roi():
+    """min_roi_pct is screened on *margin*, so at 20x a 1% move to target is
+    a 20% return and must still fail a 40% threshold."""
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=40.0, leverage=20), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=101), now_ts=0)
+    assert not decision.approved
+    assert "on margin" in decision.reason
+
+
+def test_allows_minimum_roi():
+    # 3% move x 20x = 60% on margin, clears the 40% threshold.
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=40.0, leverage=20), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
+    assert decision.approved
+
+
+def test_roi_gate_is_measured_on_margin_not_raw_price_move():
+    """Regression guard for the bug that made the agent inert: comparing an
+    unleveraged price move against a 40% threshold rejected every realistic
+    1m scalp, because BTC does not move 40% intraday."""
+    intent = _intent(rr=5.0, take_profit_1=104.64)  # ~4.64%, the scenario trade
+    assert intent.expected_roi_pct < 5.0            # nowhere near 40 on its own
+    assert intent.roi_on_margin_pct(20) > 90.0      # but 92.8% on margin at 20x
+
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=40.0, leverage=20), 1000)
+    assert rm.screen(intent, now_ts=0).approved
+
+
+def test_same_trade_is_rejected_at_low_leverage():
+    """The gate is leverage-dependent by design — the same setup that clears
+    40% on margin at 20x does not at 5x."""
+    intent = _intent(rr=5.0, take_profit_1=104.64)
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=40.0, leverage=5), 1000)
+    assert not rm.screen(intent, now_ts=0).approved
+
+
+def test_margin_sizing_gives_margin_times_leverage():
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
+                              sizing_mode="margin", margin_per_trade_usd=20.0,
+                              min_roi_pct=40.0), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
+    assert decision.approved
+    assert decision.leverage == 20
+    assert abs(decision.position_notional - 400.0) < 1e-6  # $20 x 20x
+
+
+def test_margin_sizing_still_respects_the_per_trade_risk_ceiling():
+    """Sizing by margin means the stop distance decides the loss, so a wide
+    stop must be clamped by MAX_RISK_PER_TRADE_USD — otherwise a '$20 trade'
+    could lose far more than $20."""
+    from maya.risk.sizing import calculate_margin_notional
+
+    # 50% stop: $20 x 20x = $400 notional would risk $200, way over the $20 cap.
+    notional = calculate_margin_notional(1000, 20.0, 20, entry=100, sl=50)
+    assert notional * 0.5 <= RiskLimits.MAX_RISK_PER_TRADE_USD + 1e-9
+
+
+def test_risk_sizing_mode_still_available():
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
+                              sizing_mode="risk", risk_per_trade_usd=20.0,
+                              min_roi_pct=40.0), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
+    # 5% stop, $20 risk -> $400 notional; same here by coincidence of numbers,
+    # but derived from risk rather than margin.
+    assert decision.approved
+    assert abs(decision.position_notional - 400.0) < 1e-6
+
+
+def test_leverage_above_hard_limit_is_rejected_not_clamped():
+    import pytest
+
+    with pytest.raises(Exception):
+        Settings(mode=RunMode.SIM, leverage=RiskLimits.MAX_LEVERAGE + 1)
+
+
+def test_rejects_when_halted():
+    rm = RiskManager(_settings(), 1000)
+    rm.manual_halt()
+    assert rm.screen(_intent(), now_ts=0).approved is False
+
+
+def test_daily_loss_limit_triggers_halt():
+    rm = RiskManager(_settings(), 1000)
+    rm.account.equity = 1000 * (1 - 0.04)  # -4% > 3% daily limit
+    rm.check_kill_switch(now_ts=0)
+    assert rm.account.state is SystemState.HALTED
+
+
+def test_max_one_position():
+    rm = RiskManager(_settings(), 1000)
+    rm.on_trade_opened()
+    assert rm.screen(_intent(), now_ts=0).approved is False
+
+
+def test_connection_extractors_handle_sdk_models():
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def data(self):
+            return self._payload
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    server_time = FakeResponse({"serverTime": 1234})
+    assert _extract_server_time(server_time) == 1234
+
+    ticker = FakeResponse({"price": "99.5"})
+    assert _extract_price(ticker) == 99.5
+
+    balance = [FakeModel(asset="USDT", balance="10", withdrawAvailable="5")]
+    b, a = _extract_balance(balance)
+    assert b == 10.0
+    assert a == 5.0
+
+    positions = [FakeModel(symbol="BTCUSDT", positionAmt="1", positionSide="LONG")]
+    extracted_positions = _extract_positions(positions)
+    assert extracted_positions[0]["contracts"] == 1.0
+
+    orders = [FakeModel(orderId=1, type="LIMIT", side="BUY")]
+    extracted_orders = _extract_orders(orders)
+    assert extracted_orders[0]["id"] == 1
+
+
+def test_run_diagnostics_uses_supported_binance_methods(monkeypatch):
+    class FakeExchange:
+        def __init__(self):
+            self.rest_api = self
+
+        def check_server_time(self):
+            return {"serverTime": 1_700_000_000_000}
+
+        def symbol_price_ticker(self, symbol):
+            return {"symbol": symbol, "price": "100.0"}
+
+        def futures_account_balance_v3(self):
+            return [{"asset": "USDT", "balance": "100", "withdrawAvailable": "100"}]
+
+        def futures_account_configuration(self):
+            return {"dualSidePosition": False}
+
+        def position_information_v3(self, symbol):
+            return [{"symbol": symbol, "positionAmt": "1", "positionSide": "LONG"}]
+
+        def current_all_open_orders(self, symbol):
+            return [{"orderId": 1, "type": "LIMIT", "side": "BUY"}]
+
+    monkeypatch.setattr("maya.check_connection._build_exchange", lambda settings: FakeExchange())
+    monkeypatch.setenv("BINANCE_API_KEY", "key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "secret")
+
+    report = run_diagnostics(Settings(mode=RunMode.TESTNET, start_equity=1000))
+
+    assert report.last_price == 100.0
+    assert report.open_positions[0]["contracts"] == 1.0
+    assert report.open_orders[0]["id"] == 1

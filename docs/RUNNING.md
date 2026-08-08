@@ -1,0 +1,484 @@
+# Running the Maya Agent
+
+This is the runnable LangGraph implementation of the architecture in
+[`MAYA_TRADING_SYSTEM_SPEC.md`](MAYA_TRADING_SYSTEM_SPEC.md). It implements the
+seven layers as a LangGraph state graph and runs end-to-end.
+
+> ⚠️ **Read this first.** This is an MVP, not a production money-ready bot. The
+> spec itself estimates 6–9 months to a scaled live system. The defaults here
+> are deliberately safe: **simulation mode, no API keys, no real orders.** Live
+> trading is gated behind an explicit interlock. Never point this at real funds
+> until you have backtested and paper-traded a *proven* edge.
+
+## Install
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+(`ccxt` and `anthropic` are only imported when you actually use real-exchange or
+LLM modes, so simulation runs even without them.)
+
+## Quick start (simulation, no keys)
+
+```bash
+python -m maya
+```
+
+Runs the full pipeline on synthetic order-flow data and prints a performance
+summary. Because the strategy uses conservative gates (1:4–1:5 R:R, confluence
+≥ 7), it will often take **no trades** on random noise — that is realistic
+behaviour for a selective order-flow system, not a bug.
+
+## See a trade flow through every layer (demo)
+
+```bash
+MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya
+```
+
+This replays a scripted, textbook **liquidity-sweep** setup through the
+*unmodified* strategy and risk logic so you can watch the
+signal → strategy → risk → execution → journal path end-to-end:
+
+```
+Trade intent: short liquidity_sweep_choch @ 66800.00 score=7 (...)
+[PAPER] OPEN  short BTCUSDT entry=66800 SL=67388 TP=63700
+[PAPER] CLOSE short BTCUSDT @ 63700 (take_profit)
+Trade closed: liquidity_sweep_choch win pnl=25.77
+```
+
+## Run modes
+
+Set `MAYA_MODE` (or edit `.env`, copied from `.env.example`):
+
+| Mode | Data | Orders | Keys needed |
+|---|---|---|---|
+| `sim` (default) | synthetic | simulated | none |
+| `paper` | real Binance | simulated | Binance (read) |
+| `testnet` | Binance testnet | real sandbox orders | Binance testnet |
+| `live` | real Binance | **REAL MONEY** | Binance + interlock |
+
+`live` mode refuses to start unless `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`
+and API credentials are present. Use a key with **futures permission only, no
+withdrawals, IP-whitelisted** (spec section 11).
+
+## Connecting to Binance Futures testnet
+
+1. Log in to https://testnet.binancefuture.com with GitHub.
+2. Generate an API key/secret under API Management, with Futures permission.
+3. Put them in `.env`:
+   ```
+   MAYA_MODE=testnet
+   BINANCE_API_KEY=...
+   BINANCE_API_SECRET=...
+   ```
+4. Before running the full agent, sanity-check the connection on its own —
+   this makes **no trades**, it only reads:
+   ```bash
+   python -m maya.check_connection
+   ```
+   It verifies your keys, clock sync, USDT balance, symbol price, one-way vs.
+   hedge position mode, and whether the exchange already has an open
+   position/order you don't know about. Fix anything it flags before running
+   the agent itself.
+5. `python -m maya` now runs the same check automatically at startup for
+   `paper`/`testnet`/`live`, and **refuses to start** if it fails or if the
+   exchange shows state Maya has no local record of (spec section 8.4 — never
+   auto-resolve a mismatch, always require a human to look at it).
+
+## Trading Hyperliquid via the MetaMask Agent Wallet (`MAYA_VENUE=hyperliquid`)
+
+Maya can route orders through a **self-custodial MetaMask agent wallet**
+instead of a Binance API key. Understand the substitution first:
+
+> **A MetaMask wallet cannot trade Binance.** Binance is a centralized venue
+> authenticated with an API key/secret against a Binance-held balance; a
+> MetaMask wallet is on-chain and self-custodial. Selecting this venue does
+> not "connect MetaMask to Binance" — it moves execution to **Hyperliquid
+> perpetuals**, which is what the MetaMask Agent Wallet CLI actually
+> supports. Layers 2-4 (signals, setups, confluence, risk) are unchanged and
+> venue-agnostic; only the broker swaps.
+
+### Setup
+
+```bash
+npm install -g @metamask/agent-wallet@latest   # provides the `mm` CLI
+npx skills add metamask/agent-skills           # agent-facing skill docs
+
+mm login                                       # browser / QR — interactive, do this yourself
+mm init --wallet server-wallet --mode guard    # server-held keys + Guard policy
+mm wallet create --name maya-agent --trading-mode guard
+mm perps deposit --amount <USDC> --network testnet   # sub-account is EMPTY on first use
+```
+
+`server-wallet` mode keeps the private keys on MetaMask's side, so **there is
+no seed phrase** — that is the design. Only `--wallet byok` has a local BIP-39
+mnemonic.
+
+### Guard mode vs. an unattended bot
+
+A freshly created Guard-mode wallet comes with `outflow_limits_usd:
+rolling_24h: 0` and empty allow/block lists, and MetaMask's docs state you are
+"prompted to set the limit on your first transaction". Guard mode requires
+human approval for malicious transactions, risky contracts, anything outside
+the allowlist, **and for raising the outflow limit** — delivered as a MetaMask
+Mobile push notification or an email link.
+
+That is a real conflict with an autonomous agent: Maya has no way to answer a
+push notification at 3am, and MetaMask's documentation does not describe an
+unattended-approval path. In practice:
+
+- The **first** `mm perps deposit` will need you to approve it by hand and set
+  an outflow limit. That is a one-time, human-in-the-loop step — fine.
+- If a later order trips a policy rule, it will **block until approved**, and
+  from Maya's side that looks like a very slow call and then a timeout with
+  order state *unknown*.
+
+Beast mode removes the allowlist friction (malicious transactions are still
+blocked) at the cost of the Guard protections. Neither choice is obviously
+right: Guard risks stalled orders, Beast risks unreviewed ones. Decide
+deliberately rather than by default, and prefer Guard while on testnet where a
+stall costs nothing.
+
+Then:
+
+```bash
+MAYA_MODE=testnet MAYA_VENUE=hyperliquid python -m maya.check_metamask
+MAYA_MODE=testnet MAYA_VENUE=hyperliquid python -m maya
+```
+
+`check_metamask.py` is the Hyperliquid counterpart to `check_connection.py`:
+read-only, verifies the CLI is installed and authenticated, that the
+sub-account has collateral, and that the venue shows no position/order Maya
+has no record of (the same spec §8.4 gate). `python -m maya` runs it
+automatically at startup and refuses to start if it fails.
+
+### What is proven, and what is not
+
+The command surface (`mm perps open/close/modify/positions/balance`, the
+`--json` envelope, `--network testnet`) was read from `mm --help --json`
+against CLI v6.0.0, and `tests/test_metamask_broker.py` pins the argv Maya
+builds and its failure handling (26 tests).
+
+`python -m maya.check_metamask` has been run against a live authenticated
+session on Hyperliquid testnet and returned **OK**, reading a real BTC mark
+price of 64773.00. That confirms auth, transport, the `ok`/`data` envelope and
+`perps markets` parsing.
+
+What it does **not** confirm:
+
+- **Balance and position parsing.** Both calls succeeded, but against an
+  *empty* sub-account — where a correct parse and a wrong key name look
+  identical (`0.0` and `[]` respectively). This matters because
+  `fetch_collateral_usd` seeds the risk manager's starting equity: a silent
+  parse failure would look like a $0 account, not an error. Re-run the check
+  after depositing and confirm the collateral figure matches the Hyperliquid
+  UI before trusting it.
+- **Order placement.** No order has been placed through this path, ever.
+
+Treat it as `RUNNING.md` treats the WebSocket feed: unit-tested logic, minimal
+venue hours. Testnet first.
+
+### Caveats that differ from the Binance path
+
+- **SL/TP is not atomic with entry.** `mm perps open` has no stop-loss or
+  take-profit flag; protection is attached by a second `mm perps modify`
+  call. Between the two the position is live and unprotected. The broker
+  treats a failed attach as fatal and immediately closes the position — but
+  if *that* close also fails it logs `CRITICAL` and you have a naked
+  position to handle by hand. This is strictly weaker than the Binance path,
+  where the stop goes on in the same burst as the entry.
+- **Exit prices are estimated.** The `mm` CLI exposes no fills/trade-history
+  command, so when the venue fills an SL/TP the real exit price and fee
+  cannot be read back. `PositionMonitor` journals the SL/TP level instead
+  and logs a warning. **Journal PnL on this venue is approximate** —
+  reconcile against the Hyperliquid UI before trusting the metrics.
+- **Market data still comes from Binance.** The data layer polls Binance's
+  public klines endpoint (no keys needed) while orders execute on
+  Hyperliquid. The two BTC prices track closely but are not identical, so
+  entries and stops computed off Binance candles carry a small basis error
+  against the venue actually filling them. On 1m scalping with tight stops
+  that is not negligible.
+- **Latency — measured, and it is disqualifying at 1m.** `mm auth status`
+  (the cheapest possible command: unauthenticated, no signing, no order) was
+  timed at **24s, 38s and 51s** over three consecutive subprocess calls on
+  this machine. An actual `mm perps open` adds wallet signing and venue
+  round-trips, and opening a Maya position costs *two* calls (open, then
+  modify to attach SL/TP). That is comfortably longer than the 1-minute
+  candle the decision was made on — the order lands after the setup it was
+  based on has already expired. Guard mode can block on human approval on
+  top of that. `MAYA_MM_TIMEOUT_S` (default 120) bounds the wait, and a
+  timeout leaves order state genuinely *unknown* and is logged as such; the
+  broker also logs a warning for any call over 10s.
+
+  **This is the strongest argument against running Maya's 1m scalping
+  strategy through this transport.** If you want Hyperliquid, the native
+  Hyperliquid API with a locally-signing agent wallet gives sub-second
+  placement, atomic SL/TP and real fill history. If you want the `mm` CLI,
+  raise `MAYA_TIMEFRAME` to something where tens of seconds of execution
+  delay is noise (15m/1h) rather than the dominant term.
+- **Size precision.** `MAYA_PERPS_SIZE_DECIMALS` defaults to 5, correct for
+  BTC. Check `mm perps markets` before trading any other symbol — Hyperliquid
+  rejects orders with too many size decimals.
+
+### Settings
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `MAYA_VENUE` | `binance` | `binance` or `hyperliquid` |
+| `MAYA_PERPS_ORDER_TYPE` | `limit` | `limit` enters at `intent.entry_price`, preserving planned R:R; `market` fills now and changes it |
+| `MAYA_PERPS_SIZE_DECIMALS` | `5` | Venue size precision (BTC = 5) |
+| `MAYA_PERPS_MAX_SLIPPAGE_BPS` | `50` | Slippage cap for market orders/closes |
+| `MAYA_MM_TIMEOUT_S` | `120` | Per-`mm`-call timeout |
+
+`MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
+requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.
+
+## Session state across restarts
+
+`trades_today`, `consecutive_losses`, and the day's realized PnL used to
+reset to zero on every process restart — a real gap, since those back the
+hard daily-trade-count and cooldown limits. They're now restored from the
+trade journal (SQLite) on startup via `RiskManager.from_journal`, and the
+restoration is **additively conservative**: e.g. if the journal shows a
+losing streak already at the cooldown threshold, the process starts *in*
+cooldown rather than assuming a clean slate. What's still not done: equity
+itself isn't reconciled trade-by-trade against exchange history — for
+testnet/live it's re-seeded from the current exchange USDT balance at
+startup (see `_startup_reconciliation` in `maya/run.py`), which is accurate
+but doesn't independently cross-check the journal's PnL math against it.
+
+## Position monitoring (testnet/live)
+
+The candle-driven graph only advances once per closed 1-minute candle, but
+on testnet/live the actual SL/TP orders live on the exchange and can fill at
+any moment. `maya/execution/monitor.py` runs a background thread (testnet/
+live only) that polls the exchange every 5s, and the moment it sees the
+position has gone flat there, closes it locally with the *real* fill price/
+fee pulled from `fetch_my_trades` — rather than waiting up to a minute for
+the next candle, or (the old bug) having the candle-driven code try to send
+a second close order after the exchange already filled it. Breakeven stop
+moves now also sync to the exchange (`CCXTBroker.update_stop` cancels and
+replaces the live stop order) instead of only updating the local dataclass.
+
+## Candle scheduler
+
+The ccxt feed used to tight-poll every ~6s regardless of the actual candle
+close time. `maya/data/scheduler.py` now sleeps until just after each real
+timeframe boundary and backs off exponentially on fetch errors — far fewer
+API calls, and candles are fetched right after they actually close instead
+of being caught mid-formation.
+
+## Real-time WebSocket feed (opt-in)
+
+REST polling (`CCXTFeed`, the default) only sees a candle once it's already
+closed, and pieces its trades together with a follow-up REST call. That's
+adequate for 1m scalping but isn't the continuous tick stream the spec's CVD/
+absorption indicators (§4.2) are actually designed around. `maya/data/
+websocket_feed.py` subscribes directly to Binance's combined-stream endpoint
+(`<symbol>@kline_<tf>` + `<symbol>@aggTrade`), buffers real trade ticks per
+candle window, and emits the candle the instant Binance marks it closed.
+
+It's **off by default** — set `MAYA_USE_WEBSOCKET=true` to opt in for paper/
+testnet/live. It's kept alongside `CCXTFeed` rather than replacing it: REST
+is simpler with fewer failure modes, and is what's actually been run against
+testnet. Prefer REST until the WebSocket path has real testnet hours on it.
+The message-parsing/candle-assembly logic (`parse_kline_event`,
+`parse_agg_trade_event`, `_handle_message`) is unit-tested against crafted
+Binance-format payloads — see `tests/test_websocket_feed.py` — but the live
+connection itself hasn't been exercised against a real Binance endpoint from
+this environment (no network path to Binance here); test it against testnet
+yourself before trusting it.
+
+## Backtesting
+
+`maya/backtest/runner.py` runs historical candles through the **unmodified**
+live pipeline (same `maya/graph.py` / `maya/nodes.py`, no separate backtest
+strategy code to drift out of sync) and reports the spec §14.1 go/no-go gate
+(profit factor > 1.5, max drawdown < 20%, Sharpe > 1.0 annualized, ≥200
+trades):
+
+```bash
+MAYA_SYMBOL=BTCUSDT MAYA_TIMEFRAME=1m \
+MAYA_BACKTEST_START=2025-01-01 MAYA_BACKTEST_END=2025-12-31 \
+python -m maya.backtest.runner
+```
+
+Historical OHLCV comes from Binance's public REST klines endpoint (no keys
+needed) and is cached to CSV under `data/` so repeat runs over the same
+range don't re-download. **Important caveat:** getting genuine historical
+tick-level trade data at 12-month scale is out of scope here, so each
+candle's trades are reconstructed synthetically from its OHLCV shape (same
+approach as the sim feed) — CVD/absorption signals in a backtest are an
+approximation of real order flow, not the genuine article. Treat results as
+directional, not a precise live forecast; that gap is exactly why the spec's
+paper-trading gate (§14.2) requires live results within 30% of backtest
+expectations before going further.
+
+Drawdown and Sharpe are computed off the *realized* daily equity curve
+(equity updates only when a trade closes), not a full intratrade
+mark-to-market curve, so worst-case intratrade drawdown is understated
+relative to a true tick-by-tick equity series.
+
+## Is a return target realistic? (Monte Carlo simulator)
+
+`maya/backtest/monte_carlo.py` simulates hundreds of thousands of weeks using
+the risk parameters the live system actually uses, so a target return can be
+checked against numbers instead of debated:
+
+```bash
+python -m maya.backtest.monte_carlo
+python -m maya.backtest.monte_carlo --win-rate 0.49 --trades-per-week 25 --target 40
+python -m maya.backtest.monte_carlo --compound --weeks 52   # annual path instead
+python -m maya.backtest.monte_carlo --json                  # machine-readable
+```
+
+It prints a full report — assumptions, an ASCII distribution histogram,
+percentiles, how often each risk limit actually fired, and a verdict against
+the target. `--ascii` forces plain output on terminals that can't render box
+characters; env vars (`MC_WIN_RATE`, `MC_TRADES_PER_WEEK`, `MC_STOP_DIST_PCT`,
+`MC_TARGET_PCT`, `MC_SIMULATIONS`) still work as flag defaults.
+
+### Position sizing, leverage and the ROI gate
+
+The system sizes positions one of two ways, set by `MAYA_SIZING_MODE`:
+
+| Mode | Meaning | Size is | Leverage affects |
+|---|---|---|---|
+| `margin` (default) | commit `MAYA_MARGIN_PER_TRADE_USD` of collateral at `MAYA_LEVERAGE` | `margin x leverage` | **position size** |
+| `risk` | size so a stop-out loses `MAYA_RISK_PER_TRADE_USD` | `risk / stop distance` | margin locked only |
+
+Defaults are **$20 margin at 20x = $400 notional**. On a 0.7% stop that risks
+**$2.80** per trade, 0.28% of a $1,000 account.
+
+> **Leverage is not risk.** In `risk` mode, position size comes from the stop
+> distance, so 5x and 20x produce *identical* P&L — leverage only changes how
+> much collateral is tied up and where liquidation sits. It changes your
+> exposure only in `margin` mode, where it sets the position size directly.
+> `tests/test_monte_carlo.py` pins this.
+
+Margin-mode sizing is additionally clamped by `MAX_RISK_PER_TRADE_USD`, so an
+unusually wide stop cannot turn a "$20 trade" into a much larger loss.
+
+**Liquidation.** At 20x with 0.5% maintenance margin, liquidation is a **4.50%**
+adverse move while the stop sits at 0.70% — the stop consumes 16% of the
+buffer. `MAX_LEVERAGE` is 20; `Settings` *rejects* anything higher rather than
+silently clamping it, because a config typo that doubles position size is
+exactly what the hard limits exist to catch.
+
+**`min_roi_pct` is measured on margin.** It previously compared against the raw
+*price move*, so a 40% threshold demanded a 40% move in BTC — which never
+happens intraday, and meant **the risk node rejected every single trade in
+every mode**. It now screens `TradeIntent.roi_on_margin_pct(leverage)`: the
+scenario's 4.64% move at 20x is a 92.8% return on collateral and passes. Note
+this makes the gate leverage-dependent by design — the same setup that clears
+40% at 20x does not at 5x.
+
+**Cost drag is the number to watch.** Fees plus 2bps of slippage per side come
+to 0.141% of notional, which against a 0.7% stop is **20.1% of every dollar you
+risk**, pushing the breakeven win rate from 20% to **24.0%**. This scales
+inversely with stop distance, which is why very tight stops lose to costs
+regardless of win rate.
+
+**It now models what it claimed to model.** Two corrections changed its
+conclusions substantially:
+
+1. **Sizing.** It used to simulate `RiskLimits.MAX_RISK_PER_TRADE_PCT` (0.5%
+   of equity) — a constant marked "legacy" that *nothing in the live system
+   reads*. The risk manager passes `Settings.risk_per_trade_usd` ($20) to
+   `calculate_position_notional`, which on the $1,000 default equity is **2%
+   per trade, four times more**. Fixed-USD risk also means risk-as-%-of-equity
+   *rises as you lose*, which fixed-percent modeling cannot express.
+2. **The risk limits are simulated.** The 3% daily halt, the 2-consecutive-loss
+   cooldown, the 8% weekly kill switch, the notional cap and the equity floor
+   are all enforced per simulated day. They used to be listed as known
+   omissions — tolerable at 0.5% risk, where six losses fit inside the daily
+   limit, but not at 2%, where **two losing trades already exceed it**. The
+   cooldown alone now ends ~32% of trading days, because
+   `RiskManager.on_trade_closed` resets `consecutive_losses` *only on a win* —
+   so a run sitting at 2+ losses re-arms the cooldown on every further loss.
+
+At the **current defaults** ($20 margin at 20x, notional $400, risking $2.80 a
+trade) the median week is **+1.85%** and +40% weeks essentially never happen —
+you are risking 0.28% of the account per trade, so the account cannot move
+that fast. Switch to `--risk-model fixed_usd --risk-usd 20` (risking $20
+instead of committing $20) and the same strategy gives a **+13.2%** median week
+with ~1 week in 17 clearing +40%, because position size is ~7x larger. The
+difference is sizing, not leverage — both runs are 20x.
+
+> **This is not a claim that 40%/week is achievable.** The simulator models
+> the *risk architecture*, and assumes whatever win rate you hand it. At 1:4
+> R:R the breakeven win rate is 22.9%, so the default 45% assumption encodes
+> an enormous edge — that assumption, not the arithmetic, is the thing to be
+> skeptical of. Validate the win rate against the backtest and paper-trading
+> gates (§14.1/§14.2) before treating any of these figures as a forecast.
+
+By default each simulated week restarts from `--start-equity`, so results
+don't depend on `--weeks`. Pass `--compound` for the different question — what
+a year of compounding looks like — where later weeks carry much larger equity
+and therefore much smaller percentage swings.
+
+## Optional LLM veto layer
+
+```bash
+export MAYA_LLM_ENABLED=true
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+When enabled, an LLM reviews each trade the rules already approved and may
+**veto** it (it can never originate a trade — spec section 6.4).
+
+## Tests
+
+```bash
+python -m pytest -q
+```
+
+Covers the order-flow indicators, the risk limits/kill-switch, and an
+end-to-end integration run through the LangGraph pipeline.
+
+## How the graph is wired
+
+`maya/graph.py` builds a `StateGraph` invoked once per candle:
+
+```
+START → manage (L5) → signal (L2) → strategy (L3) → risk (L4) → execution (L5) → END
+```
+
+- **manage** advances any open position against the new candle (SL/TP,
+  breakeven, max-duration) and writes closed trades to the journal (L6).
+- **signal** computes CVD, volume profile, absorption, divergence, AMT phase.
+- **strategy** runs the three setups, scores confluence, applies the LLM veto.
+- **risk** runs the kill switch and screens the intent against the hard limits.
+- **execution** opens approved trades via the paper or ccxt broker.
+
+The ingestion loop (L1) lives in `maya/run.py`; monitoring (L7) is the
+structured logging plus the journal metrics.
+
+## What's implemented vs. stubbed
+
+**Implemented & runnable:** all seven layers wired through LangGraph, the three
+setups, confluence scoring, the full hard-limit risk gate + kill switch,
+position sizing, paper execution with SL/TP/breakeven/duration management, the
+SQLite trade journal + metrics, the optional LLM veto, and a ccxt broker/feed
+for paper/testnet/live. A standalone `check_connection.py` diagnostic;
+journal-backed restoration of `trades_today`/`consecutive_losses`/daily PnL
+on restart; a boundary-aligned candle scheduler instead of tight polling; a
+background position monitor that reconciles real exchange fills faster than
+the candle cadence and syncs breakeven stop moves to the exchange; an opt-in
+real-time WebSocket feed (`MAYA_USE_WEBSOCKET=true`); and an event-driven
+backtester that runs the unmodified live pipeline over historical klines
+and reports the spec §14.1 go/no-go gate.
+
+**Intentionally minimal (extend before live use):** funding rate / OI /
+long-short ratio and the news-blackout calendar are placeholders; order-book
+depth and liquidation streams from spec §4.2 aren't subscribed to yet
+(kline + aggTrade only); Telegram/dashboard (L7 UI) is logging-only. State
+reconciliation (spec §8.4) covers the startup gate and the ongoing position
+monitor, but doesn't do a full order-book-level audit, and equity is
+re-seeded from the exchange balance rather than independently cross-checked
+against the journal's cumulative PnL. The backtester's trade-tick data is
+synthetically reconstructed from OHLCV shape, not real historical ticks
+(see `maya/backtest/data_loader.py`) — treat backtest results as directional,
+not a precise live forecast. The WebSocket feed's parsing/assembly logic is
+unit-tested but hasn't had real testnet connection hours on it yet.
