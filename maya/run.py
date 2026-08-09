@@ -146,22 +146,45 @@ def main() -> None:
 
 
 def _report(nodes: TradingNodes, journal: TradeJournal, processed: int) -> None:
+    """Summarize the run.
+
+    Reports **this run** separately from the all-time journal. They are not the
+    same number: the journal is durable across restarts by design (it backs the
+    spec-8.4 risk-state restoration), so its aggregates mix every previous run
+    — including sim runs mixed in with testnet and live ones. Presenting those
+    as the run summary is actively misleading, and would corrupt the §14.1
+    profit-factor / win-rate gates.
+    """
     acc = nodes.risk.account
-    metrics = journal.metrics()
+    run = journal.metrics(session_only=True)
+    lifetime = journal.metrics()
+
     logger.info("------------------------------------------------------------")
     logger.info("Candles processed : {}", processed)
     logger.info("Final equity      : ${:.2f} (start ${:.2f})",
                 acc.equity, acc.start_equity)
     logger.info("System state      : {}", acc.state.value)
-    if metrics.get("trades", 0):
-        logger.info("Trades            : {}", metrics["trades"])
-        logger.info("Win rate          : {}%", metrics["win_rate"])
-        logger.info("Profit factor     : {}", metrics["profit_factor"])
-        logger.info("Total PnL         : ${}", metrics["total_pnl_usdt"])
-        logger.info("Expectancy/trade  : ${}", metrics["expectancy"])
-        logger.info("Total fees        : ${}", metrics["total_fees"])
+
+    if run.get("trades", 0):
+        logger.info("--- this run ---")
+        logger.info("Trades            : {}", run["trades"])
+        logger.info("Win rate          : {}%", run["win_rate"])
+        logger.info("Profit factor     : {}", run["profit_factor"])
+        logger.info("Total PnL         : ${}", run["total_pnl_usdt"])
+        logger.info("Expectancy/trade  : ${}", run["expectancy"])
+        logger.info("Total fees        : ${}", run["total_fees"])
     else:
         logger.info("No trades were taken in this run.")
+
+    # Only worth printing when it says something the run summary doesn't.
+    older = lifetime.get("trades", 0) - run.get("trades", 0)
+    if older > 0:
+        logger.info("--- journal all-time ({} earlier trade(s) from previous runs) ---",
+                    older)
+        logger.info("Trades            : {}", lifetime["trades"])
+        logger.info("Win rate          : {}%", lifetime["win_rate"])
+        logger.info("Profit factor     : {}", lifetime["profit_factor"])
+        logger.info("Total PnL         : ${}", lifetime["total_pnl_usdt"])
     logger.info("------------------------------------------------------------")
 
 

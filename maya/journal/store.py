@@ -56,16 +56,26 @@ class TradeJournal:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
+        # Ids written by *this* process. The journal is deliberately durable
+        # across restarts (it backs the spec-8.4 risk-state restoration), so
+        # "how did this run do" cannot be answered by querying the whole
+        # table. Timestamps can't answer it either: the sim and scenario feeds
+        # emit synthetic clocks (the scripted setup is stamped in 2023), so
+        # filtering on timestamp_exit >= process-start would drop the very
+        # trades the run just made.
+        self._session_ids: list[str] = []
 
     def record(self, result: TradeResult, confluences: list[str]) -> None:
         pos = result.position
         pnl_pct = result.pnl_usdt / pos.notional * 100 if pos.notional else 0.0
+        trade_id = str(uuid.uuid4())
+        self._session_ids.append(trade_id)
         self.conn.execute(
             "INSERT INTO trades VALUES "
             "(:id,:te,:tx,:sym,:dir,:setup,:ep,:xp,:sl,:tp,:size,:lev,"
             ":pnl,:pnlpct,:fees,:rrr,:rrp,:res,:cs,:conf,:reason)",
             {
-                "id": str(uuid.uuid4()),
+                "id": trade_id,
                 "te": pos.opened_ts, "tx": result.exit_ts,
                 "sym": pos.symbol, "dir": pos.direction, "setup": pos.setup_name,
                 "ep": pos.entry_price, "xp": result.exit_price,
@@ -123,9 +133,24 @@ class TradeJournal:
             "pnl_today_usdt": self.pnl_today_usdt(now_ts),
         }
 
-    def metrics(self) -> dict:
-        """Aggregate performance metrics (spec section 9.2)."""
-        rows = self.conn.execute("SELECT * FROM trades").fetchall()
+    def metrics(self, session_only: bool = False) -> dict:
+        """Aggregate performance metrics (spec section 9.2).
+
+        ``session_only=True`` restricts the aggregate to trades this process
+        recorded. Use it for anything reported as "what this run did" — the
+        all-time figures mix sim, testnet and live runs together, which would
+        quietly corrupt the §14.1 profit-factor / win-rate gates.
+        """
+        if session_only:
+            if not self._session_ids:
+                return {"trades": 0}
+            placeholders = ",".join("?" * len(self._session_ids))
+            rows = self.conn.execute(
+                f"SELECT * FROM trades WHERE id IN ({placeholders})",
+                self._session_ids,
+            ).fetchall()
+        else:
+            rows = self.conn.execute("SELECT * FROM trades").fetchall()
         n = len(rows)
         if n == 0:
             return {"trades": 0}
