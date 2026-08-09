@@ -123,6 +123,7 @@ class MetaMaskPerpsBroker:
         self.network = "testnet" if settings.mode.value == "testnet" else "mainnet"
         self.venue = settings.perps_venue
         self.timeout_s = settings.mm_timeout_s
+        self._market_cache: dict[str, dict[str, Any]] = {}
 
     # -- transport -------------------------------------------------------- #
     def _run(self, *args: str, timeout: float | None = None) -> dict[str, Any]:
@@ -171,6 +172,11 @@ class MetaMaskPerpsBroker:
 
         if not payload.get("ok", False):
             raise MMError(f"`{printable}` failed: {_describe_error(payload)}")
+
+        # `data` is not always an object: `perps positions` and `perps orders`
+        # return a bare JSON array (confirmed: `{"ok":true,"data":[]}`). It is
+        # wrapped under "result" so every caller gets a dict, and `as_list`
+        # knows to look there.
         data = payload.get("data")
         return data if isinstance(data, dict) else {"result": data}
 
@@ -187,11 +193,69 @@ class MetaMaskPerpsBroker:
         """``mm auth status`` — whether the CLI session can sign anything."""
         return self._run("auth", "status")
 
+    def market_meta(self, symbol: str) -> dict[str, Any]:
+        """Venue metadata for ``symbol``, fetched once and cached.
+
+        Confirmed shape from a live ``mm perps markets --symbol BTC``::
+
+            {"venue": "hyperliquid", "symbol": "BTC", "maxLeverage": 40,
+             "sizeDecimals": 5, "markPrice": "64849.0",
+             "oraclePrice": "65044.9", "fundingRate": "-0.0000693105",
+             "openInterest": "61.64058", "volume24h": "..."}
+
+        Cached deliberately: every ``mm`` call costs tens of seconds, so this
+        must not be on the per-order path.
+        """
+        sym = to_hl_symbol(symbol)
+        if sym in self._market_cache:
+            return self._market_cache[sym]
+
+        data = self.perps("markets", "--symbol", sym)
+        for entry in as_list(data, "markets"):
+            if isinstance(entry, dict) and to_hl_symbol(
+                    str(pick(entry, "symbol", "coin", default=""))) == sym:
+                self._market_cache[sym] = entry
+                return entry
+        raise MMError(f"{sym} not found in `mm perps markets` on {self.network}")
+
+    def size_decimals_for(self, symbol: str) -> int:
+        """Venue size precision, read from the venue rather than assumed.
+
+        Hyperliquid rejects orders carrying more size decimals than the
+        market's ``sizeDecimals``, and that value differs per market — so
+        hardcoding the BTC value (5) would silently break every other symbol.
+        Falls back to the configured default if the lookup fails, since an
+        order with a good-enough size beats no order at all.
+        """
+        try:
+            meta = self.market_meta(symbol)
+        except MMError as exc:
+            logger.warning("could not read sizeDecimals for {} ({}); using "
+                           "configured default {}", symbol, exc,
+                           self.settings.perps_size_decimals)
+            return self.settings.perps_size_decimals
+        value = pick(meta, "sizeDecimals", "szDecimals", default=None)
+        return int(value) if value is not None else self.settings.perps_size_decimals
+
+    def check_leverage_supported(self, symbol: str, leverage: int) -> None:
+        """Warn if the requested leverage exceeds what the market allows."""
+        try:
+            max_lev = as_float(pick(self.market_meta(symbol), "maxLeverage", default=0.0))
+        except MMError:
+            return
+        if max_lev and leverage > max_lev:
+            logger.error("{} allows at most {:.0f}x on {} but {}x was requested — "
+                         "the venue will reject this order",
+                         to_hl_symbol(symbol), max_lev, self.network, leverage)
+
     # -- Broker protocol -------------------------------------------------- #
     def open_position(self, intent: TradeIntent, qty: float, leverage: int) -> bool:
         sym = to_hl_symbol(intent.symbol)
         side = "long" if intent.direction == "long" else "short"
-        size = _format_size(qty, self.settings.perps_size_decimals)
+        # Precision and leverage limits come from the venue (cached, so this
+        # costs one call per symbol per process, not one per order).
+        size = _format_size(qty, self.size_decimals_for(intent.symbol))
+        self.check_leverage_supported(intent.symbol, leverage)
 
         open_args = [
             "open",
@@ -306,12 +370,46 @@ class MetaMaskPerpsBroker:
         return None
 
     def fetch_collateral_usd(self) -> float:
-        """Account equity on the venue, used to re-seed Maya's equity at startup."""
+        """Account equity on the venue, used to re-seed Maya's equity at startup.
+
+        Reads ``totalBalance`` — the account's total value — as confirmed
+        against a live ``mm perps balance --network testnet`` response::
+
+            {"venue": "hyperliquid", "totalBalance": "0",
+             "spendableBalance": "0.0", "withdrawableBalance": "0.0",
+             "marginUsed": "0", "unrealizedPnl": "0.00",
+             "returnOnEquity": "0", "subAccounts": {"main": {...}}}
+
+        Every figure arrives as a *string*, hence :func:`as_float`.
+        ``spendableBalance`` is free margin, not equity, so it is only a
+        fallback: seeding Maya's risk manager off free margin would understate
+        equity whenever a position is open.
+        """
         data = self.perps("balance")
-        return as_float(pick(
-            data, "accountValue", "equity", "totalEquity", "withdrawable",
-            "available", "balance", default=0.0,
-        ))
+        value = pick(data, "totalBalance", "accountValue", "equity", default=None)
+        if value is None:
+            # Nested form, if the venue ever reports only per-sub-account.
+            sub = data.get("subAccounts")
+            if isinstance(sub, dict) and isinstance(sub.get("main"), dict):
+                value = pick(sub["main"], "totalBalance", "accountValue", default=None)
+        if value is None:
+            value = pick(data, "spendableBalance", "withdrawableBalance", default=0.0)
+            logger.warning(
+                "`mm perps balance` had no totalBalance field — falling back to "
+                "free margin, which understates equity while a position is open. "
+                "Payload keys: {}", sorted(data))
+        return as_float(value)
+
+    def fetch_balance_detail(self) -> dict[str, float]:
+        """Full balance breakdown, for diagnostics rather than the hot path."""
+        data = self.perps("balance")
+        return {
+            "total": as_float(pick(data, "totalBalance", default=0.0)),
+            "spendable": as_float(pick(data, "spendableBalance", default=0.0)),
+            "withdrawable": as_float(pick(data, "withdrawableBalance", default=0.0)),
+            "margin_used": as_float(pick(data, "marginUsed", default=0.0)),
+            "unrealized_pnl": as_float(pick(data, "unrealizedPnl", default=0.0)),
+        }
 
 
 # -- payload helpers ------------------------------------------------------- #

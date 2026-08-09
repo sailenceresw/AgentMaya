@@ -198,11 +198,27 @@ def test_stop_wider_than_liquidation_buffer_forfeits_the_whole_margin():
 def test_costs_raise_the_breakeven_win_rate_above_the_frictionless_floor():
     from maya.backtest.monte_carlo import _breakeven_win_rate
 
-    frictionless = SimParams(slippage_bps=0.0, funding_rate_per_8h=0.0)
-    realistic = SimParams(slippage_bps=2.0, funding_rate_per_8h=0.0001)
+    frictionless = SimParams(slippage_bps=0.0, funding_rate_hourly=0.0, fee_rate=0.0)
+    realistic = SimParams(slippage_bps=2.0, funding_rate_hourly=0.0000693)
     assert _breakeven_win_rate(realistic) > _breakeven_win_rate(frictionless)
-    # At 1:4 R:R the zero-cost floor is 20%; real costs push it meaningfully up.
+    # At 1:4 R:R the zero-cost floor is exactly 20%.
+    assert _breakeven_win_rate(frictionless) == pytest.approx(20.0)
     assert 20.0 < _breakeven_win_rate(realistic) < 30.0
+
+
+def test_fee_rate_follows_the_venue():
+    """Hyperliquid quoted 0.00015 per side via `mm perps quote`; Binance USD-M
+    taker is 0.0005. Charging the Binance rate on Hyperliquid overstates cost
+    drag by more than 3x."""
+    from maya.config import BINANCE_FEE_RATE, HYPERLIQUID_FEE_RATE, RunMode, Settings, Venue
+
+    hl = Settings(mode=RunMode.TESTNET, venue=Venue.HYPERLIQUID)
+    bn = Settings(mode=RunMode.TESTNET, venue=Venue.BINANCE)
+    assert hl.effective_fee_rate == HYPERLIQUID_FEE_RATE
+    assert bn.effective_fee_rate == BINANCE_FEE_RATE
+    assert bn.effective_fee_rate > hl.effective_fee_rate * 3
+    # An explicit override still wins over the venue default.
+    assert Settings(venue=Venue.HYPERLIQUID, fee_rate=0.001).effective_fee_rate == 0.001
 
 
 def test_tighter_stops_are_eaten_by_costs():

@@ -108,7 +108,21 @@ npx skills add metamask/agent-skills           # agent-facing skill docs
 mm login                                       # browser / QR — interactive, do this yourself
 mm init --wallet server-wallet --mode guard    # server-held keys + Guard policy
 mm wallet create --name maya-agent --trading-mode guard
-mm perps deposit --amount <USDC> --network testnet   # sub-account is EMPTY on first use
+```
+
+**Funding is a two-step process, and the first step is off-CLI.**
+`mm perps deposit` bridges USDC *from the wallet's on-chain balance* into the
+Hyperliquid sub-account — it cannot conjure funds. A newly created wallet
+reports `{"totalValue": "0", "chains": []}`, so the deposit fails with nothing
+to send. You must first get testnet USDC onto the wallet address on **Arbitrum
+Sepolia** (chain `eip155:421614`, the testnet default for `--source-chain-id`)
+from a faucet, then:
+
+```bash
+mm wallet address                                     # confirm the destination
+mm wallet balance                                     # must be non-zero first
+mm perps deposit --amount <USDC> --network testnet --dry-run   # preview
+mm perps deposit --amount <USDC> --network testnet             # approve on mobile
 ```
 
 `server-wallet` mode keeps the private keys on MetaMask's side, so **there is
@@ -160,23 +174,56 @@ The command surface (`mm perps open/close/modify/positions/balance`, the
 against CLI v6.0.0, and `tests/test_metamask_broker.py` pins the argv Maya
 builds and its failure handling (26 tests).
 
-`python -m maya.check_metamask` has been run against a live authenticated
-session on Hyperliquid testnet and returned **OK**, reading a real BTC mark
-price of 64773.00. That confirms auth, transport, the `ok`/`data` envelope and
-`perps markets` parsing.
+Every payload the broker parses has now been captured verbatim from a live
+authenticated testnet session and is pinned as a fixture in
+`tests/test_metamask_broker.py`. **Doing that found a real bug**: the balance
+parser was looking for `accountValue`/`equity`/`totalEquity`/`withdrawable`/
+`available`/`balance`, and the CLI emits none of them — the real field is
+`totalBalance`. It would have returned `0.0` on a funded account and seeded
+the risk manager with a $0 equity, silently. Confirmed shapes:
 
-What it does **not** confirm:
+```json
+perps balance   {"venue":"hyperliquid","totalBalance":"0","spendableBalance":"0.0",
+                 "withdrawableBalance":"0.0","marginUsed":"0","unrealizedPnl":"0.00", ...}
+perps positions []            // a BARE array, not {"positions": [...]}
+perps orders    []
+perps markets   [{"symbol":"BTC","maxLeverage":40,"sizeDecimals":5,
+                  "markPrice":"64849.0","fundingRate":"-0.0000693105", ...}]
+```
 
-- **Balance and position parsing.** Both calls succeeded, but against an
-  *empty* sub-account — where a correct parse and a wrong key name look
-  identical (`0.0` and `[]` respectively). This matters because
-  `fetch_collateral_usd` seeds the risk manager's starting equity: a silent
-  parse failure would look like a $0 account, not an error. Re-run the check
-  after depositing and confirm the collateral figure matches the Hyperliquid
-  UI before trusting it.
-- **Order placement.** No order has been placed through this path, ever.
+Every numeric field arrives as a **string**. Two things follow from the market
+payload: `sizeDecimals` is now read from the venue instead of assumed (cached
+per symbol, so it stays off the per-order path), and `maxLeverage: 40` confirms
+20x is within Hyperliquid's limit for BTC.
 
-Treat it as `RUNNING.md` treats the WebSocket feed: unit-tested logic, minimal
+**Order construction is venue-validated.** `mm perps open --dry-run` with
+exactly the argv the broker builds returned:
+
+```json
+{"venue":"hyperliquid","symbol":"BTC","status":"prepared",
+ "averagePrice":"66800","filledSize":"0.00599"}
+```
+
+`mm perps quote` on the same order independently confirms the sizing math —
+`notional: "400.13"` for $20 of margin at 20x — and reports
+`estimatedLiquidationPrice: "70140"`, a 5.0% adverse move against a 0.70% stop.
+
+**Fee rate corrected.** The quote reports `feeRate: 0.00015` — Hyperliquid
+charges 1.5bps for a limit order, while the engine hardcoded the Binance taker
+rate of 5bps, overstating fees 3.3x on every Hyperliquid PnL calculation. Fees
+are now venue-resolved (`Settings.effective_fee_rate`, overridable with
+`MAYA_FEE_RATE`). Funding is also charged **hourly** on Hyperliquid, not
+8-hourly as the simulator assumed.
+
+What is **still** unverified, and cannot be until the sub-account holds funds:
+
+- **How an open position reports.** `perps positions` has only ever been
+  observed empty, so the field names on a *populated* entry are still inferred
+  (the parser tries `size`/`szi`/`sz`/`contracts`). This is the last real gap.
+- **A submitted order.** `--dry-run` validates and prepares; nothing has been
+  signed or filled.
+
+Treat it as `RUNNING.md` treats the WebSocket feed: verified logic, minimal
 venue hours. Testnet first.
 
 ### Caveats that differ from the Binance path

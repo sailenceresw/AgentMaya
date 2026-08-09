@@ -102,7 +102,14 @@ class SimParams:
     # crossing the spread pays this every single trade; at tight stops it is
     # a meaningful share of risk.
     slippage_bps: float = 2.0
-    funding_rate_per_8h: float = 0.0001  # 0.01%, typical neutral BTC perp
+    # Per-side fee rate, resolved from the venue like everything else here.
+    # Hyperliquid quoted 0.00015 for a limit order; Binance USD-M taker is
+    # 0.0005. Using the wrong one misstates cost drag by >3x.
+    fee_rate: float = field(default_factory=lambda: Settings().effective_fee_rate)
+    # Hyperliquid charges funding **hourly**, not every 8 hours. The default is
+    # the rate actually observed on BTC testnet (-0.0000693105/h, taken as a
+    # magnitude — the sign depends on which side you are on).
+    funding_rate_hourly: float = 0.0000693
     avg_hold_hours: float = 0.5
 
     # Whether to enforce the halts/cooldowns. Off reproduces the old
@@ -163,9 +170,9 @@ class SimParams:
     @property
     def cost_frac_of_notional(self) -> float:
         """Round-trip cost as a fraction of notional: fees + slippage + funding."""
-        return (FEE_RATE * 2
+        return (self.fee_rate * 2
                 + (self.slippage_bps / 10_000) * 2
-                + self.funding_rate_per_8h * (self.avg_hold_hours / 8))
+                + self.funding_rate_hourly * self.avg_hold_hours)
 
     @property
     def initial_risk_pct(self) -> float:
@@ -662,8 +669,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--leverage", type=int, default=d.leverage, help="leverage multiplier")
     p.add_argument("--slippage-bps", type=float, default=d.slippage_bps,
                    help="slippage per side, bps of notional")
-    p.add_argument("--funding-rate", type=float, default=d.funding_rate_per_8h,
-                   help="perp funding rate per 8h, as a fraction")
+    p.add_argument("--funding-rate", type=float, default=d.funding_rate_hourly,
+                   help="perp funding rate per HOUR, as a fraction "
+                        "(Hyperliquid charges hourly, not 8-hourly)")
+    p.add_argument("--fee-rate", type=float, default=d.fee_rate,
+                   help="per-side fee rate as a fraction")
     p.add_argument("--hold-hours", type=float, default=d.avg_hold_hours,
                    help="average position hold time, hours (drives funding cost)")
     p.add_argument("--seed", type=int, default=d.seed)
@@ -691,7 +701,8 @@ def main(argv: list[str] | None = None) -> None:
         risk_model=args.risk_model,
         leverage=args.leverage,
         slippage_bps=args.slippage_bps,
-        funding_rate_per_8h=args.funding_rate,
+        funding_rate_hourly=args.funding_rate,
+        fee_rate=args.fee_rate,
         avg_hold_hours=args.hold_hours,
         seed=args.seed,
         enforce_risk_limits=not args.no_risk_limits,

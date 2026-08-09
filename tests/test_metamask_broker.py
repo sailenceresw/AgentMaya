@@ -1,12 +1,19 @@
 """Tests for the MetaMask Agent Wallet / Hyperliquid broker.
 
 No network and no `mm` process: :func:`subprocess.run` is replaced with a
-recorder that returns crafted ``{"ok": ...}`` envelopes. That envelope shape
-is the part actually confirmed against the installed CLI (v6.0.0), so what
-these tests pin down is *our* side of the contract — the argv we construct,
-the safety behaviour on failure, and the tolerance of the payload parsing.
-They cannot prove the venue accepts these orders; only a testnet run does
-that (see docs/RUNNING.md).
+recorder that replays payloads captured **verbatim** from a live authenticated
+Hyperliquid testnet session (CLI v6.0.0, 2026-08-09) — see the ``REAL_*``
+fixtures below. They are the actual wire format, not invented shapes, which is
+what makes the parsing assertions meaningful: an earlier version of this file
+asserted against guessed key names and happily passed while the parser was
+returning 0.0 for every balance.
+
+What these still cannot prove is fill behaviour — how a real position reports
+once one is open, and what a partial fill looks like — because the test
+sub-account has never held a position. The argv itself *is* venue-validated:
+`mm perps open --dry-run` with exactly the argv built here returned
+``{"status": "prepared", "averagePrice": "66800", "filledSize": "0.00599"}``.
+See docs/RUNNING.md for what remains unverified.
 """
 from __future__ import annotations
 
@@ -70,8 +77,24 @@ class FakeMM:
         return " ".join(self.calls[index][1:])
 
 
+def prime_market_cache(broker: MetaMaskPerpsBroker) -> MetaMaskPerpsBroker:
+    """Seed the venue-metadata cache so order-construction tests observe only
+    the order calls. Mirrors the real steady state: metadata is fetched once
+    per symbol per process, never per order."""
+    broker._market_cache["BTC"] = REAL_MARKET_BTC
+    return broker
+
+
 @pytest.fixture
 def broker(settings, monkeypatch) -> MetaMaskPerpsBroker:
+    monkeypatch.setattr(
+        "maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
+    return prime_market_cache(MetaMaskPerpsBroker(settings))
+
+
+@pytest.fixture
+def cold_broker(settings, monkeypatch) -> MetaMaskPerpsBroker:
+    """Broker with an empty metadata cache, for tests that exercise lookup."""
     monkeypatch.setattr(
         "maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
     return MetaMaskPerpsBroker(settings)
@@ -171,7 +194,7 @@ def test_market_order_type_sends_slippage_cap(settings, intent, monkeypatch):
     monkeypatch.setattr(
         "maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
     settings = settings.model_copy(update={"perps_order_type": "market"})
-    broker = MetaMaskPerpsBroker(settings)
+    broker = prime_market_cache(MetaMaskPerpsBroker(settings))
     fake = FakeMM({"ok": True, "data": {}}, {"ok": True, "data": {}})
     install(monkeypatch, fake)
 
@@ -241,32 +264,115 @@ def test_empty_output_raises_mm_error(broker, monkeypatch):
         broker.perps("positions")
 
 
-def test_fetch_position_finds_matching_symbol(broker, monkeypatch):
-    install(monkeypatch, FakeMM({"ok": True, "data": {"positions": [
-        {"coin": "ETH", "szi": 2.0},
-        {"coin": "BTC", "szi": -0.034},
-    ]}}))
-    entry = broker.fetch_position("BTCUSDT")
-    assert entry is not None and entry["coin"] == "BTC"
+# --------------------------------------------------------------------------- #
+# Fixtures captured VERBATIM from a live `mm ... --network testnet --json` run
+# against an authenticated session on 2026-08-09, CLI v6.0.0. These are the
+# real wire format, not invented shapes — every numeric field is a string.
+# --------------------------------------------------------------------------- #
+REAL_BALANCE = {
+    "venue": "hyperliquid", "totalBalance": "0", "spendableBalance": "0.0",
+    "withdrawableBalance": "0.0", "marginUsed": "0", "unrealizedPnl": "0.00",
+    "returnOnEquity": "0",
+    "subAccounts": {"main": {"totalBalance": "0", "spendableBalance": "0.0",
+                             "withdrawableBalance": "0.0"}},
+}
+REAL_POSITIONS_EMPTY: list = []   # `perps positions` returns a BARE array
+REAL_ORDERS_EMPTY: list = []
+REAL_MARKET_BTC = {
+    "venue": "hyperliquid", "symbol": "BTC", "maxLeverage": 40,
+    "sizeDecimals": 5, "markPrice": "64849.0", "oraclePrice": "65044.9",
+    "fundingRate": "-0.0000693105", "openInterest": "61.64058",
+    "volume24h": "1908026.8980800002",
+}
+REAL_DRY_RUN_OPEN = {
+    "venue": "hyperliquid", "symbol": "BTC", "status": "prepared",
+    "averagePrice": "66800", "filledSize": "0.00599",
+}
 
 
-def test_fetch_position_returns_none_when_flat(broker, monkeypatch):
-    install(monkeypatch, FakeMM({"ok": True, "data": {"positions": [
-        {"coin": "BTC", "szi": 0.0},
-    ]}}))
+def test_fetch_collateral_reads_the_real_total_balance_field(broker, monkeypatch):
+    """Regression guard for a confirmed bug: the parser originally looked for
+    accountValue/equity/totalEquity/withdrawable/available/balance, none of
+    which the CLI emits. It returned 0.0 unconditionally, which would have
+    seeded the risk manager with a $0 account on a funded venue."""
+    funded = dict(REAL_BALANCE, totalBalance="1234.56", spendableBalance="1000.0")
+    install(monkeypatch, FakeMM({"ok": True, "data": funded}))
+    assert broker.fetch_collateral_usd() == pytest.approx(1234.56)
+
+
+def test_fetch_collateral_prefers_equity_over_free_margin(broker, monkeypatch):
+    """spendableBalance is free margin. Seeding equity from it would understate
+    the account whenever margin is committed to an open position."""
+    with_position = dict(REAL_BALANCE, totalBalance="1000.0",
+                         spendableBalance="200.0", marginUsed="800.0")
+    install(monkeypatch, FakeMM({"ok": True, "data": with_position}))
+    assert broker.fetch_collateral_usd() == pytest.approx(1000.0)
+
+
+def test_fetch_collateral_handles_the_real_empty_account(broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": REAL_BALANCE}))
+    assert broker.fetch_collateral_usd() == 0.0
+
+
+def test_balance_detail_breaks_out_the_real_fields(broker, monkeypatch):
+    funded = dict(REAL_BALANCE, totalBalance="1000.0", spendableBalance="200.0",
+                  withdrawableBalance="150.0", marginUsed="800.0",
+                  unrealizedPnl="12.50")
+    install(monkeypatch, FakeMM({"ok": True, "data": funded}))
+    detail = broker.fetch_balance_detail()
+    assert detail == pytest.approx({
+        "total": 1000.0, "spendable": 200.0, "withdrawable": 150.0,
+        "margin_used": 800.0, "unrealized_pnl": 12.5,
+    })
+
+
+def test_fetch_position_parses_the_real_bare_array(broker, monkeypatch):
+    """`perps positions` returns a bare JSON array, not a {"positions": [...]}
+    object — confirmed as {"ok": true, "data": []}."""
+    install(monkeypatch, FakeMM({"ok": True, "data": REAL_POSITIONS_EMPTY}))
     assert broker.fetch_position("BTCUSDT") is None
 
 
-def test_fetch_position_tolerates_bare_list_payload(broker, monkeypatch):
-    """The inner payload shape is unverified, so a top-level list must parse
-    as readily as a {"positions": [...]} wrapper."""
-    install(monkeypatch, FakeMM({"ok": True, "data": [{"symbol": "BTC", "size": -0.034}]}))
-    assert broker.fetch_position("BTCUSDT") is not None
+def test_fetch_position_finds_matching_symbol(broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": [
+        {"venue": "hyperliquid", "symbol": "ETH", "size": "2.0"},
+        {"venue": "hyperliquid", "symbol": "BTC", "size": "-0.00599"},
+    ]}))
+    entry = broker.fetch_position("BTCUSDT")
+    assert entry is not None and entry["symbol"] == "BTC"
 
 
-def test_fetch_collateral_reads_several_key_spellings(broker, monkeypatch):
-    install(monkeypatch, FakeMM({"ok": True, "data": {"accountValue": "1234.56"}}))
-    assert broker.fetch_collateral_usd() == pytest.approx(1234.56)
+def test_fetch_position_returns_none_when_size_is_zero(broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": [
+        {"venue": "hyperliquid", "symbol": "BTC", "size": "0"},
+    ]}))
+    assert broker.fetch_position("BTCUSDT") is None
+
+
+def test_size_decimals_comes_from_the_venue_not_a_hardcoded_guess(cold_broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": [REAL_MARKET_BTC]}))
+    assert cold_broker.size_decimals_for("BTCUSDT") == 5
+
+
+def test_market_meta_is_cached_so_it_stays_off_the_order_path(cold_broker, monkeypatch):
+    """Each mm call costs tens of seconds; metadata must be fetched once."""
+    fake = FakeMM({"ok": True, "data": [REAL_MARKET_BTC]})
+    install(monkeypatch, fake)
+    cold_broker.size_decimals_for("BTCUSDT")
+    cold_broker.size_decimals_for("BTCUSDT")
+    cold_broker.check_leverage_supported("BTCUSDT", 20)
+    assert len(fake.calls) == 1
+
+
+def test_size_decimals_falls_back_when_the_lookup_fails(cold_broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": False, "error": "network down"}))
+    assert cold_broker.size_decimals_for("BTCUSDT") == cold_broker.settings.perps_size_decimals
+
+
+def test_leverage_within_venue_maximum_is_accepted(cold_broker, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": [REAL_MARKET_BTC]}))
+    # BTC on Hyperliquid reports maxLeverage 40, so 20x is fine.
+    cold_broker.check_leverage_supported("BTCUSDT", 20)  # must not raise
 
 
 # -- venue routing --------------------------------------------------------- #

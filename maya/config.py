@@ -21,6 +21,12 @@ class RunMode(str, Enum):
     LIVE = "live"        # REAL MONEY
 
 
+# Per-side fee rates. Binance USD-M taker is 5bps (conservative — maker is
+# 2bps). Hyperliquid quoted 0.00015 for a limit order via `mm perps quote`.
+BINANCE_FEE_RATE = 0.0005
+HYPERLIQUID_FEE_RATE = 0.00015
+
+
 class Venue(str, Enum):
     """Where orders are actually placed.
 
@@ -95,6 +101,11 @@ class Settings(BaseSettings):
     # trading anything else.
     perps_size_decimals: int = 5
     perps_max_slippage_bps: int = 50
+    # Per-side fee rate. Left unset it resolves per venue: Binance USD-M taker
+    # is 5bps, while Hyperliquid quoted 1.5bps for a limit order
+    # (`feeRate: 0.00015` from `mm perps quote`). Using the Binance number on
+    # Hyperliquid overstates costs by ~3.3x on every trade.
+    fee_rate: float | None = None
     # Each `mm` call spawns Node and may wait on wallet signing/MFA, so this
     # is generous compared to a REST timeout.
     mm_timeout_s: int = 120
@@ -141,6 +152,14 @@ class Settings(BaseSettings):
     @property
     def uses_real_data(self) -> bool:
         return self.mode in (RunMode.PAPER, RunMode.TESTNET, RunMode.LIVE)
+
+    @property
+    def effective_fee_rate(self) -> float:
+        """Per-side fee rate to charge in PnL, resolved per venue when unset."""
+        if self.fee_rate is not None:
+            return self.fee_rate
+        return (HYPERLIQUID_FEE_RATE if self.venue is Venue.HYPERLIQUID
+                else BINANCE_FEE_RATE)
 
     @property
     def uses_metamask(self) -> bool:

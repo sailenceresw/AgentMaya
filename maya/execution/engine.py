@@ -13,14 +13,17 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from maya.config import RiskLimits, Settings
+from maya.config import BINANCE_FEE_RATE, RiskLimits, Settings
 from maya.data.models import Candle
 from maya.execution.brokers import build_broker
 from maya.execution.models import Position
 from maya.risk.manager import RiskDecision
 from maya.strategy.models import TradeIntent
 
-FEE_RATE = 0.0005  # taker, conservative
+# Default per-side fee rate (Binance USD-M taker, conservative). The engine
+# reads the venue-resolved rate from Settings; this stays as the module-level
+# default other code and tests reference.
+FEE_RATE = BINANCE_FEE_RATE
 
 
 @dataclass
@@ -38,6 +41,7 @@ class TradeResult:
 class ExecutionEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.fee_rate = settings.effective_fee_rate
         self.broker = build_broker(settings)
         self.position: Position | None = None
         # Guards `position` against a race between the candle-driven graph
@@ -71,7 +75,7 @@ class ExecutionEngine:
         pos = self.position
         assert pos is not None
         gross = pos.pnl_at(exit_price)
-        fees = pos.notional * FEE_RATE * 2  # entry + exit
+        fees = pos.notional * self.fee_rate * 2  # entry + exit
         pnl = gross - fees
         risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
         rr = (gross / risk) if risk else 0.0
@@ -151,7 +155,7 @@ class ExecutionEngine:
             if pos is None:
                 return None
             gross = pos.pnl_at(exit_price)
-            fees = fees_usdt if fees_usdt is not None else pos.notional * FEE_RATE * 2
+            fees = fees_usdt if fees_usdt is not None else pos.notional * self.fee_rate * 2
             pnl = gross - fees
             risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
             rr = (gross / risk) if risk else 0.0
