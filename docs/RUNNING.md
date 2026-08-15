@@ -369,22 +369,36 @@ relative to a true tick-by-tick equity series.
 
 ## Is a return target realistic? (Monte Carlo simulator)
 
-`maya/backtest/monte_carlo.py` simulates hundreds of thousands of weeks using
+`maya/backtest/monte_carlo.py` simulates hundreds of thousands of **days** using
 the risk parameters the live system actually uses, so a target return can be
 checked against numbers instead of debated:
 
 ```bash
-python -m maya.backtest.monte_carlo
-python -m maya.backtest.monte_carlo --win-rate 0.49 --trades-per-week 25 --target 40
-python -m maya.backtest.monte_carlo --compound --weeks 52   # annual path instead
-python -m maya.backtest.monte_carlo --json                  # machine-readable
+python -m maya.backtest.monte_carlo                          # just the distribution
+python -m maya.backtest.monte_carlo --win-rate 0.49 --trades-per-day 5 --target 5
+python -m maya.backtest.monte_carlo --compound --days 252     # annual path instead
+python -m maya.backtest.monte_carlo --json                    # machine-readable
 ```
 
+The reported unit is a **day**, matching the cadence the system runs at: a 1m
+strategy with a 5-trades-per-day cap and a 3% daily-loss halt. Internally it
+still advances a week at a time, because the 8% weekly kill switch can only
+bind across days — so a simulated day sits inside a week with its own history
+rather than being an isolated coin flip. Equity resets weekly (not daily) for
+the same reason; resetting every day would delete that limit from the model.
+
+`--target` is **optional**. Omit it and the report just tells you what the risk
+architecture can produce; pass a daily % only to test a goal you already have.
+
 It prints a full report — assumptions, an ASCII distribution histogram,
-percentiles, how often each risk limit actually fired, and a verdict against
-the target. `--ascii` forces plain output on terminals that can't render box
-characters; env vars (`MC_WIN_RATE`, `MC_TRADES_PER_WEEK`, `MC_STOP_DIST_PCT`,
+percentiles, how often each risk limit actually fired, and (with `--target`) a
+verdict. `--ascii` forces plain output on terminals that can't render box
+characters; env vars (`MC_WIN_RATE`, `MC_TRADES_PER_DAY`, `MC_STOP_DIST_PCT`,
 `MC_TARGET_PCT`, `MC_SIMULATIONS`) still work as flag defaults.
+
+> Reading the median: on a selective strategy most days have no qualifying
+> setup, so a median of `+0.00%` is a **flat day**, not a breakeven trade. The
+> report's "Flat days (no trade)" row separates the two.
 
 ### Position sizing, leverage and the ROI gate
 
@@ -446,12 +460,18 @@ conclusions substantially:
    so a run sitting at 2+ losses re-arms the cooldown on every further loss.
 
 At the **current defaults** ($20 margin at 20x, notional $400, risking $2.80 a
-trade) the median week is **+1.85%** and +40% weeks essentially never happen —
-you are risking 0.28% of the account per trade, so the account cannot move
-that fast. Switch to `--risk-model fixed_usd --risk-usd 20` (risking $20
-instead of committing $20) and the same strategy gives a **+13.2%** median week
-with ~1 week in 17 clearing +40%, because position size is ~7x larger. The
-difference is sizing, not leverage — both runs are 20x.
+trade) the **mean day is +0.38%** — you are risking 0.28% of the account per
+trade, so the account cannot move fast. Switch to
+`--risk-model fixed_usd --risk-usd 20` (risking $20 instead of committing $20)
+and the same strategy gives a **+2.57% mean day**, because position size is
+~7x larger. The difference is sizing, not leverage — both runs are 20x.
+
+The **median day is +0.00% in both**, and that is not a contradiction: the
+system takes ~1.3 trades a day and ~20% of days have no qualifying setup at
+all, so the middle of the distribution is a flat day. The mean is carried by
+the ~37% of days that lose and the tail that wins — at fixed-USD sizing the
+95th-percentile day is **+15.2%** against a mean of +2.57%. Judge this system
+on the mean and the tail, not the median.
 
 > **This is not a claim that 40%/week is achievable.** The simulator models
 > the *risk architecture*, and assumes whatever win rate you hand it. At 1:4
@@ -461,7 +481,7 @@ difference is sizing, not leverage — both runs are 20x.
 > gates (§14.1/§14.2) before treating any of these figures as a forecast.
 
 By default each simulated week restarts from `--start-equity`, so results
-don't depend on `--weeks`. Pass `--compound` for the different question — what
+don't depend on `--days`. Pass `--compound` for the different question — what
 a year of compounding looks like — where later weeks carry much larger equity
 and therefore much smaller percentage swings.
 
@@ -529,3 +549,75 @@ synthetically reconstructed from OHLCV shape, not real historical ticks
 (see `maya/backtest/data_loader.py`) — treat backtest results as directional,
 not a precise live forecast. The WebSocket feed's parsing/assembly logic is
 unit-tested but hasn't had real testnet connection hours on it yet.
+
+---
+
+## The desk (`maya/agents/`)
+
+Five pipeline agents and four analysts. The analysts do not run in sequence —
+they all read the same bar and each files a `Finding` (verdict, confidence,
+evidence), which Maya combines into a `Conference`.
+
+```python
+from maya.agents import desk
+conference = desk.confer(candles, signal, risk_manager, now_ts)
+print(conference.summary())
+# bullish(+1.21) | Atlas:bullish(0.85) Echo:bullish(0.63) Flow:bearish(0.12)
+```
+
+Why a conference instead of a bigger confluence integer: when the system
+declines a trade you can read *who* disagreed and why. A score going from 7 to
+6 tells you nothing.
+
+**Maya's three rules**
+
+1. `Sentinel`'s `BLOCK` is absolute — no weight of opinion beats "the account
+   cannot take another trade".
+2. A split desk stands down. If the losing side holds more than `MAX_DISSENT`
+   (40%) of total opinion, Maya declines rather than sizing small. Averaging a
+   genuine conflict is how a system ends up trading its own confusion.
+3. Weights (`Atlas` 1.0, `Echo` 0.7, `Flow` 0.6) are **declared, not fitted**.
+   Fitting them to the same window that produced the measurements would be
+   curve-fitting with extra steps.
+
+### Atlas — support and resistance as *zones*
+
+A level is a region price repeatedly cared about, not a line through one wick.
+Atlas clusters confirmed swings (which need bars on both sides, so no lookahead)
+into zones scored by touches (50%), volume (30%) and recency (20%). Zones pad to
+a minimum width — touches landing on the identical print would otherwise give a
+zero-width zone price can never be *inside*.
+
+### Echo — patterns in context
+
+The pattern library (`maya/signals/patterns.py`) is context-free by design: a
+hammer is a shape. Echo supplies the meaning. Shape alone earns 0.25; a pattern
+printing at a zone that agrees with it earns up to +0.45 more, scaled by zone
+strength. Context is judged on the bar's **range**, not its close — a rejection
+candle tests a level with its wick and closes away from it.
+
+### Flow — and a deliberate inversion
+
+`DELTA_IS_MOMENTUM = False`. Measured over 24 months, positive delta preceded
+negative forward returns in 8/8 sub-periods on BTC and SOL. Flow encodes the
+measured reading; the legacy setups in `maya/strategy/setups.py` are **not**
+flipped, because silently inverting a live strategy on a sub-2bps effect would
+be reckless. Change one, deliberately, when you decide to.
+
+## Technicals & patterns (`maya/signals/`)
+
+`oscillators.py` — SMA, EMA, ATR, RSI, MACD, Bollinger, VWAP, SuperTrend.
+Wilder smoothing where the definition calls for it, so values match charting
+packages. Every function returns `None` rather than a short-window value: a
+14-period RSI seeded from 4 bars is a different indicator, not a weaker one.
+
+`patterns.py` — doji, marubozu, hammer, shooting star, bullish/bearish
+engulfing, morning star, evening star, inside bar. All thresholds are ratios,
+so a $0.30 SOL candle and a $65,000 BTC candle read identically.
+
+`technicals.py` — EMA trend with a dead band (without it, EMAs sitting on top
+of each other flip the trend every bar), swing structure, S/R levels.
+
+`timeframes.py` — folds the 1m stream into higher timeframes. Buckets are
+epoch-aligned, and a bar is published only once a later bar proves it closed,
+so backtest and live see the same bar at the same moment.

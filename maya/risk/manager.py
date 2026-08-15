@@ -36,6 +36,10 @@ class RiskDecision:
     leverage: int = RiskLimits.DEFAULT_LEVERAGE
 
 
+_DAY_MS = 86_400_000
+_WEEK_MS = 7 * _DAY_MS
+
+
 @dataclass
 class AccountState:
     equity: float
@@ -48,6 +52,12 @@ class AccountState:
     state: SystemState = SystemState.RUNNING
     cooldown_until_ts: int = 0
     halt_reasons: list[str] = field(default_factory=list)
+    # Period boundaries the counters above are scoped to. -1 = not yet anchored;
+    # the first roll_periods() call anchors them without resetting anything, so
+    # counters restored from the journal survive startup. Not 0 -- that is a
+    # legitimate epoch day, and tests/backtests do start the clock there.
+    day_start_ts: int = -1
+    week_start_ts: int = -1
 
 
 class RiskManager:
@@ -106,6 +116,14 @@ class RiskManager:
         return rm
 
     # -- kill switch ------------------------------------------------------- #
+    # Halts that a new period clears, mapped to the period that clears them.
+    # A "daily" loss limit that stops the system forever is not a daily limit;
+    # it is a one-shot kill switch wearing the wrong name. Everything not
+    # listed here (the equity floor, a stale feed, a manual halt) is sticky:
+    # those describe conditions that a calendar rollover does not repair.
+    _DAILY_HALT = "daily loss limit"
+    _WEEKLY_HALT = "weekly loss limit"
+
     def _halt(self, reason: str) -> None:
         if self.account.state is not SystemState.HALTED:
             logger.critical("KILL SWITCH — HALT: {}", reason)
@@ -113,16 +131,62 @@ class RiskManager:
         if reason not in self.account.halt_reasons:
             self.account.halt_reasons.append(reason)
 
+    def _clear_halts(self, prefix: str) -> None:
+        """Drop halts of one kind; resume only if nothing else is holding."""
+        remaining = [r for r in self.account.halt_reasons if not r.startswith(prefix)]
+        if len(remaining) == len(self.account.halt_reasons):
+            return
+        self.account.halt_reasons = remaining
+        if not remaining and self.account.state is SystemState.HALTED:
+            self.account.state = SystemState.RUNNING
+            logger.info("New period — {} halt cleared, trading resumes", prefix)
+
+    def roll_periods(self, now_ts: int) -> None:
+        """Roll the daily/weekly counters when the clock crosses a boundary.
+
+        Without this ``trades_today`` only ever increments and
+        ``day_start_equity`` never moves, which silently turns three periodic
+        limits into lifetime ones: MAX_TRADES_PER_DAY becomes a cap of 5 trades
+        for the life of the process, and the "daily"/"weekly" loss limits
+        measure drawdown from session start forever rather than from today's
+        open.
+
+        A new period also clears the halt raised *by that period's* loss limit
+        — and only that one. A daily-loss halt that never lifts is a permanent
+        kill switch, not a daily limit. Halts describing conditions a calendar
+        change does not repair (equity floor, stale data, manual) stay put, and
+        a period rollover can never clear more than one kind at a time, so a
+        system halted for two reasons stays halted.
+        """
+        acc = self.account
+        day = (now_ts // _DAY_MS) * _DAY_MS
+        week = (now_ts // _WEEK_MS) * _WEEK_MS
+
+        if acc.day_start_ts < 0:  # first observation — anchor, don't reset
+            acc.day_start_ts, acc.week_start_ts = day, week
+            return
+
+        if day > acc.day_start_ts:
+            acc.day_start_ts = day
+            acc.trades_today = 0
+            acc.day_start_equity = acc.equity
+            self._clear_halts(self._DAILY_HALT)
+        if week > acc.week_start_ts:
+            acc.week_start_ts = week
+            acc.week_start_equity = acc.equity
+            self._clear_halts(self._WEEKLY_HALT)
+
     def check_kill_switch(self, now_ts: int, data_stale: bool = False) -> None:
         """Evaluate kill-switch triggers (spec section 7.3)."""
+        self.roll_periods(now_ts)
         acc = self.account
         daily_dd = (acc.day_start_equity - acc.equity) / acc.day_start_equity * 100
         weekly_dd = (acc.week_start_equity - acc.equity) / acc.week_start_equity * 100
 
         if daily_dd >= RiskLimits.DAILY_LOSS_LIMIT_PCT:
-            self._halt(f"daily loss limit hit ({daily_dd:.2f}%)")
+            self._halt(f"{self._DAILY_HALT} hit ({daily_dd:.2f}%)")
         if weekly_dd >= RiskLimits.WEEKLY_LOSS_LIMIT_PCT:
-            self._halt(f"weekly loss limit hit ({weekly_dd:.2f}%)")
+            self._halt(f"{self._WEEKLY_HALT} hit ({weekly_dd:.2f}%)")
         if acc.equity < RiskLimits.EQUITY_FLOOR_USDT:
             self._halt(f"equity below floor (${acc.equity:.2f})")
         if data_stale:
@@ -133,6 +197,9 @@ class RiskManager:
 
     # -- per-intent screening ---------------------------------------------- #
     def screen(self, intent: TradeIntent, now_ts: int) -> RiskDecision:
+        # Idempotent, and screen() is also called directly (tests, tooling), so
+        # the caps are always evaluated against the correct period.
+        self.roll_periods(now_ts)
         acc = self.account
 
         if acc.state is SystemState.HALTED:

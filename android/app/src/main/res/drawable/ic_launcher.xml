@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vector rather than PNG densities: no binary assets in the repo, and it
+     scales to every launcher size on its own. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#0B0F14" android:pathData="M0,0h108v108h-108z" />
+    <!-- A rising candle, which is what the thing actually watches. -->
+    <path android:fillColor="#3FB950"
+        android:pathData="M44,34h8v40h-8z M46,26h4v8h-4z M46,74h4v8h-4z" />
+    <path android:fillColor="#58A6FF"
+        android:pathData="M62,48h8v26h-8z M64,42h4v6h-4z M64,74h4v6h-4z" />
+    <path android:fillColor="#F85149"
+        android:pathData="M26,56h8v18h-8z M28,50h4v6h-4z M28,74h4v6h-4z" />
+</vector>

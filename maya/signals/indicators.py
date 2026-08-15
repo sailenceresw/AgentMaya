@@ -15,10 +15,24 @@ from maya.signals.models import Absorption, VolumeProfile
 
 
 def candle_delta(trades: list[Trade]) -> float:
-    """Cumulative Volume Delta for one candle (spec 5.2.1)."""
+    """Cumulative Volume Delta for one candle from individual ticks (spec 5.2.1)."""
     buy = sum(t.qty for t in trades if not t.is_buyer_maker)
     sell = sum(t.qty for t in trades if t.is_buyer_maker)
     return buy - sell
+
+
+def delta_for(candle: Candle) -> float:
+    """CVD contribution of one candle, preferring the exchange's own figure.
+
+    ``Candle.taker_buy_volume`` is Binance's aggressive-buy total for the bar,
+    which makes the delta exact. Summing reconstructed ticks is the fallback,
+    and it is only ever as good as the reconstruction — for a long time this
+    system computed CVD from *synthetic* ticks generated out of candle
+    direction, which made every CVD-derived signal a function of the
+    generator rather than of the market.
+    """
+    exact = candle.delta
+    return exact if exact is not None else candle_delta(candle.trades)
 
 
 def volume_profile(candles: list[Candle], bins: int = 24, value_area: float = 0.70) -> VolumeProfile:

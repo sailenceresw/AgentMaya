@@ -1,7 +1,13 @@
-"""Monte Carlo weekly-return simulator.
+"""Monte Carlo daily-return simulator.
 
 Answers one question with numbers instead of argument: **given Maya's own risk
-architecture, what weekly returns are actually reachable?**
+architecture, what daily returns are actually reachable?**
+
+The reported unit is a *day*, which is the cadence the system actually runs at:
+a 1-minute strategy with a 5-trades-per-day cap and a 3% daily-loss halt. The
+simulation still advances a week at a time internally, because the 8% weekly
+kill switch is a real limit that can only bind across days — so a day here is a
+day inside a week that has its own history, not an isolated coin flip.
 
 The model is driven by the parameters the live system really uses — the
 fixed-USD risk amount from ``Settings.risk_per_trade_usd``, the notional cap
@@ -59,9 +65,9 @@ class SimParams:
     win_rate: float = 0.45  # spec's realistic 43-49% target, midpoint
     reward_risk: float = RiskLimits.MIN_RR_FOR_ENTRY  # 4.0 — the hard floor
     avg_stop_distance_pct: float = 0.7  # typical SL distance, % of price
-    trades_per_week_mean: float = 8.0  # selective, not maxed out every day
-    max_trades_per_week: int = RiskLimits.MAX_TRADES_PER_DAY * TRADING_DAYS_PER_WEEK
-    weeks: int = 52
+    trades_per_day_mean: float = 1.6  # selective, not maxed out every day
+    max_trades_per_day: int = RiskLimits.MAX_TRADES_PER_DAY
+    days: int = 252  # a trading year
     simulations: int = 5_000
     seed: int = 42
 
@@ -120,17 +126,29 @@ class SimParams:
     # Carry equity from one simulated week into the next.
     #
     # Off by default, and the reason matters. With *fixed-USD* risk, risk as a
-    # percentage of equity falls as the account grows. Compounding 52 weeks of
-    # positive expectancy therefore fills the sample with large-equity weeks
-    # where $20 is a rounding error, and the weekly-return distribution
-    # silently becomes a function of how many weeks you asked for. Since the
-    # question this module exists to answer is "what does a week look like
-    # from where I am now", every week instead starts from ``start_equity``,
-    # which makes the result independent of ``weeks``.
+    # percentage of equity falls as the account grows. Compounding a year of
+    # positive expectancy therefore fills the sample with large-equity days
+    # where $20 is a rounding error, and the return distribution silently
+    # becomes a function of how many days you asked for. Since the question
+    # this module exists to answer is "what does a day look like from where I
+    # am now", equity is reset to ``start_equity`` every week, which makes the
+    # result independent of ``days``.
+    #
+    # The reset is weekly rather than daily on purpose: resetting every day
+    # would make each day an independent coin flip and the 8% weekly kill
+    # switch could never bind, quietly deleting a real limit from the model.
+    # Days within a week stay path-dependent, so a bad Monday still shapes
+    # Tuesday.
     #
     # Turn it on for the different question — "what might a year do" —
     # where the compounding path and its drawdowns are the whole point.
     compound: bool = False
+
+    @property
+    def weeks(self) -> int:
+        """Simulated weeks needed to cover ``days``. The engine advances a week
+        at a time so the weekly kill switch has a period to bind over."""
+        return -(-self.days // TRADING_DAYS_PER_WEEK)  # ceil
 
     @property
     def stop_frac(self) -> float:
@@ -197,6 +215,9 @@ class SimParams:
 
 @dataclass
 class SimResult:
+    daily_returns: list[float]
+    # Retained because the 8% kill switch is a weekly limit, so judging it
+    # needs a weekly view even though the headline unit is now a day.
     weekly_returns: list[float]
     final_equities: list[float]
     # Diagnostics: how often the risk architecture actually intervened.
@@ -204,7 +225,7 @@ class SimResult:
     pct_days_ended_by_cooldown: float
     pct_weeks_halted_weekly_loss: float
     pct_sims_hitting_equity_floor: float
-    mean_trades_per_week: float
+    mean_trades_per_day: float
 
 
 def fee_pct_of_equity(risk_pct: float, avg_stop_distance_pct: float) -> float:
@@ -236,14 +257,14 @@ def simulate_detailed(params: SimParams) -> SimResult:
 
     rng = np.random.default_rng(params.seed)
     n = params.simulations
+    n_weeks = params.weeks
     stop_frac = params.avg_stop_distance_pct / 100
-    max_per_day = RiskLimits.MAX_TRADES_PER_DAY
-    daily_cap_per_day = max(1, params.max_trades_per_week // TRADING_DAYS_PER_WEEK)
-    slots_per_day = min(max_per_day, daily_cap_per_day)
-    opp_lambda = params.trades_per_week_mean / TRADING_DAYS_PER_WEEK
+    slots_per_day = min(RiskLimits.MAX_TRADES_PER_DAY, max(1, params.max_trades_per_day))
+    opp_lambda = params.trades_per_day_mean
 
     equity = np.full(n, float(params.start_equity))
-    weekly_returns = np.empty((params.weeks, n), dtype=float)
+    weekly_returns = np.empty((n_weeks, n), dtype=float)
+    daily_returns = np.empty((n_weeks, TRADING_DAYS_PER_WEEK, n), dtype=float)
     # Persists for the whole run, deliberately: RiskManager.on_trade_closed
     # resets this counter *only on a win* — never when the cooldown expires
     # and never at a day boundary. So once a run is at 2+ consecutive losses,
@@ -284,7 +305,7 @@ def simulate_detailed(params: SimParams) -> SimResult:
     notional = np.empty(n)
     pnl = np.empty(n)
 
-    for week in range(params.weeks):
+    for week in range(n_weeks):
         if not params.compound:
             # Each week is an independent look at the account as it stands
             # today, so the sample is not dominated by grown-equity weeks.
@@ -362,52 +383,70 @@ def simulate_detailed(params: SimParams) -> SimResult:
 
                 floor_hit |= equity <= floor
 
+            # The day's return, measured against the equity it opened with —
+            # the same baseline RiskManager.day_start_equity uses.
+            np.divide(equity, day_start, out=pnl)
+            daily_returns[week, day] = (pnl - 1) * 100
             days_total += n
 
         np.divide(equity, week_start, out=pnl)
         weekly_returns[week] = (pnl - 1) * 100
 
-    total_weeks = params.weeks * n
+    total_weeks = n_weeks * n
+    # Trim to exactly the days requested: `weeks` rounds up, so a `days` that
+    # is not a multiple of 5 would otherwise report a slightly larger sample.
+    daily_flat = daily_returns.reshape(n_weeks * TRADING_DAYS_PER_WEEK, n)[:params.days]
+    total_days = daily_flat.size
     return SimResult(
+        daily_returns=daily_flat.ravel(order="C").tolist(),
         weekly_returns=weekly_returns.ravel(order="C").tolist(),
         final_equities=equity.tolist(),
         pct_days_halted_daily_loss=days_halted_daily / days_total * 100 if days_total else 0.0,
         pct_days_ended_by_cooldown=days_ended_cooldown / days_total * 100 if days_total else 0.0,
         pct_weeks_halted_weekly_loss=weeks_halted_weekly / total_weeks * 100 if total_weeks else 0.0,
         pct_sims_hitting_equity_floor=float(floor_hit.mean() * 100),
-        mean_trades_per_week=trades_taken / total_weeks if total_weeks else 0.0,
+        mean_trades_per_day=trades_taken / days_total if days_total else 0.0,
     )
 
 
 def simulate(params: SimParams) -> list[float]:
-    """Weekly % returns across every simulated week — the full empirical
+    """Daily % returns across every simulated day — the full empirical
     distribution, not just a mean. Kept as the module's stable entry point."""
-    return simulate_detailed(params).weekly_returns
+    return simulate_detailed(params).daily_returns
 
 
-def summarize(weekly_returns: list[float], target_pct: float = 40.0) -> dict:
-    arr = np.asarray(weekly_returns, dtype=float)
+def summarize(daily_returns: list[float], target_pct: float | None = None) -> dict:
+    """Summarize the daily-return distribution.
+
+    ``target_pct`` is optional on purpose: the first question is what the risk
+    architecture *can* produce, not whether it clears a number picked in
+    advance. Pass one only to test a goal you already have.
+    """
+    arr = np.asarray(daily_returns, dtype=float)
     n = arr.size
-    hits = int((arr >= target_pct).sum())
 
     def pct(p: float) -> float:
         # Linear-interpolated percentile; the previous int(p/100*n) index was
         # a nearest-rank approximation that drifted on small samples.
         return float(np.percentile(arr, p))
 
-    return {
-        "n_weeks_simulated": n,
-        "mean_weekly_return_pct": round(float(arr.mean()), 3),
-        "median_weekly_return_pct": round(float(np.median(arr)), 3),
-        "p5_weekly_return_pct": round(pct(5), 3),
-        "p25_weekly_return_pct": round(pct(25), 3),
-        "p75_weekly_return_pct": round(pct(75), 3),
-        "p95_weekly_return_pct": round(pct(95), 3),
-        "worst_week_pct": round(float(arr.min()), 3),
-        "best_week_pct": round(float(arr.max()), 3),
-        "pct_weeks_negative": round(float((arr < 0).mean() * 100), 2),
-        f"pct_weeks_hitting_{target_pct:.0f}pct_target": round(hits / n * 100, 4),
+    out = {
+        "n_days_simulated": n,
+        "mean_daily_return_pct": round(float(arr.mean()), 3),
+        "median_daily_return_pct": round(float(np.median(arr)), 3),
+        "p5_daily_return_pct": round(pct(5), 3),
+        "p25_daily_return_pct": round(pct(25), 3),
+        "p75_daily_return_pct": round(pct(75), 3),
+        "p95_daily_return_pct": round(pct(95), 3),
+        "worst_day_pct": round(float(arr.min()), 3),
+        "best_day_pct": round(float(arr.max()), 3),
+        "pct_days_negative": round(float((arr < 0).mean() * 100), 2),
+        "pct_days_flat": round(float((arr == 0).mean() * 100), 2),
     }
+    if target_pct is not None:
+        hits = int((arr >= target_pct).sum())
+        out[f"pct_days_hitting_{target_pct:g}pct_target"] = round(hits / n * 100, 4)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -486,10 +525,10 @@ def _row(label: str, value: str, width: int = 36) -> str:
 
 def _histogram(returns: np.ndarray, g: Glyphs, bins: int = 21, height: int = 9) -> list[str]:
     """Horizontal distribution histogram, clipped to p1..p99 so a handful of
-    extreme weeks cannot flatten the visible shape."""
+    extreme days cannot flatten the visible shape."""
     lo, hi = float(np.percentile(returns, 1)), float(np.percentile(returns, 99))
     if hi <= lo:
-        return ["  (distribution is degenerate — all weeks identical)"]
+        return ["  (distribution is degenerate — all days identical)"]
 
     counts, edges = np.histogram(np.clip(returns, lo, hi), bins=bins, range=(lo, hi))
     peak = counts.max() or 1
@@ -506,12 +545,13 @@ def _histogram(returns: np.ndarray, g: Glyphs, bins: int = 21, height: int = 9) 
 
 
 def render_report(params: SimParams, result: SimResult, summary: dict,
-                  target_pct: float, unicode_ok: bool | None = None) -> str:
+                  target_pct: float | None = None,
+                  unicode_ok: bool | None = None) -> str:
     use_unicode = _supports_unicode() if unicode_ok is None else unicode_ok
     g = Glyphs(use_unicode)
-    arr = np.asarray(result.weekly_returns)
+    arr = np.asarray(result.daily_returns)
     out: list[str] = [""]
-    out += _box("Maya  ·  Monte Carlo weekly-return simulation", g)
+    out += _box("Maya  ·  Monte Carlo daily-return simulation", g)
     out.append("")
 
     # -- assumptions -------------------------------------------------------- #
@@ -533,16 +573,16 @@ def render_report(params: SimParams, result: SimResult, summary: dict,
                     f"({params.initial_risk_pct:.2f}% of equity)"))
     out.append(_row("Starting equity", f"${params.start_equity:,.2f}"))
     out.append(_row("Avg stop distance", f"{params.avg_stop_distance_pct:.2f}% of price"))
-    out.append(_row("Trade opportunities", f"~{params.trades_per_week_mean:.0f}/week "
-                                           f"(cap {params.max_trades_per_week})"))
-    out.append(_row("Trades actually taken", f"{result.mean_trades_per_week:.1f}/week"))
+    out.append(_row("Trade opportunities", f"~{params.trades_per_day_mean:.1f}/day "
+                                           f"(cap {params.max_trades_per_day}/day)"))
+    out.append(_row("Trades actually taken", f"{result.mean_trades_per_day:.2f}/day"))
     out.append(_row("Risk limits enforced",
                     "yes" if params.enforce_risk_limits else "NO (optimistic)"))
     out.append(_row("Equity between weeks",
                     "compounded" if params.compound
                     else f"reset to ${params.start_equity:,.0f} each week"))
-    out.append(_row("Sample", f"{summary['n_weeks_simulated']:,} weeks "
-                              f"({params.simulations:,} runs x {params.weeks} weeks)"))
+    out.append(_row("Sample", f"{summary['n_days_simulated']:,} days "
+                              f"({params.simulations:,} runs x {params.days} days)"))
     out.append("")
 
     # -- leverage & costs --------------------------------------------------- #
@@ -571,20 +611,24 @@ def render_report(params: SimParams, result: SimResult, summary: dict,
     out.append("")
 
     # -- distribution ------------------------------------------------------- #
-    out.append(_rule("WEEKLY RETURN DISTRIBUTION", g))
+    out.append(_rule("DAILY RETURN DISTRIBUTION", g))
     out += _histogram(arr, g)
     out.append("")
 
     out.append(_rule("PERCENTILES", g))
-    out.append(_row("Worst week", f"{summary['worst_week_pct']:+.2f}%"))
-    out.append(_row("5th percentile", f"{summary['p5_weekly_return_pct']:+.2f}%"))
-    out.append(_row("25th percentile", f"{summary['p25_weekly_return_pct']:+.2f}%"))
-    out.append(_row("Median", f"{summary['median_weekly_return_pct']:+.2f}%"))
-    out.append(_row("Mean", f"{summary['mean_weekly_return_pct']:+.2f}%"))
-    out.append(_row("75th percentile", f"{summary['p75_weekly_return_pct']:+.2f}%"))
-    out.append(_row("95th percentile", f"{summary['p95_weekly_return_pct']:+.2f}%"))
-    out.append(_row("Best week", f"{summary['best_week_pct']:+.2f}%"))
-    out.append(_row("Losing weeks", f"{summary['pct_weeks_negative']:.1f}%"))
+    out.append(_row("Worst day", f"{summary['worst_day_pct']:+.2f}%"))
+    out.append(_row("5th percentile", f"{summary['p5_daily_return_pct']:+.2f}%"))
+    out.append(_row("25th percentile", f"{summary['p25_daily_return_pct']:+.2f}%"))
+    out.append(_row("Median", f"{summary['median_daily_return_pct']:+.2f}%"))
+    out.append(_row("Mean", f"{summary['mean_daily_return_pct']:+.2f}%"))
+    out.append(_row("75th percentile", f"{summary['p75_daily_return_pct']:+.2f}%"))
+    out.append(_row("95th percentile", f"{summary['p95_daily_return_pct']:+.2f}%"))
+    out.append(_row("Best day", f"{summary['best_day_pct']:+.2f}%"))
+    out.append(_row("Losing days", f"{summary['pct_days_negative']:.1f}%"))
+    # On a selective 1m strategy most days simply have no qualifying setup, and
+    # a median of 0.00% is a flat day rather than a breakeven trade — worth
+    # naming so the median is not misread.
+    out.append(_row("Flat days (no trade)", f"{summary['pct_days_flat']:.1f}%"))
     out.append("")
 
     # -- risk architecture -------------------------------------------------- #
@@ -599,24 +643,24 @@ def render_report(params: SimParams, result: SimResult, summary: dict,
     out.append("")
 
     # -- verdict ------------------------------------------------------------ #
-    key = f"pct_weeks_hitting_{target_pct:.0f}pct_target"
-    hit_rate = summary[key]
-    out.append(_rule(f"VERDICT vs {target_pct:.0f}% WEEKLY TARGET", g))
-    if hit_rate < 0.01:
-        verdict = "ESSENTIALLY UNREACHABLE"
-        detail = "fewer than 1 week in 10,000 clears the target"
-    elif hit_rate < 1:
-        verdict = "RARE"
-        detail = f"roughly 1 week in {round(100 / max(hit_rate, 1e-9)):,} clears it"
-    elif hit_rate < 10:
-        verdict = "OCCASIONAL"
-        detail = f"about 1 week in {round(100 / hit_rate)} clears it"
-    else:
-        verdict = "REGULARLY REACHED"
-        detail = f"{hit_rate:.1f}% of weeks clear it"
-    out.append(_row("Weeks hitting target", f"{hit_rate:.4f}%"))
-    out.append(_row("Read", f"{verdict} — {detail}"))
-    out.append("")
+    if target_pct is not None:
+        hit_rate = summary[f"pct_days_hitting_{target_pct:g}pct_target"]
+        out.append(_rule(f"VERDICT vs {target_pct:g}% DAILY TARGET", g))
+        if hit_rate < 0.01:
+            verdict = "ESSENTIALLY UNREACHABLE"
+            detail = "fewer than 1 day in 10,000 clears the target"
+        elif hit_rate < 1:
+            verdict = "RARE"
+            detail = f"roughly 1 day in {round(100 / max(hit_rate, 1e-9)):,} clears it"
+        elif hit_rate < 10:
+            verdict = "OCCASIONAL"
+            detail = f"about 1 day in {round(100 / hit_rate)} clears it"
+        else:
+            verdict = "REGULARLY REACHED"
+            detail = f"{hit_rate:.1f}% of days clear it"
+        out.append(_row("Days hitting target", f"{hit_rate:.4f}%"))
+        out.append(_row("Read", f"{verdict} — {detail}"))
+        out.append("")
 
     # -- caveats ------------------------------------------------------------ #
     out.append(_rule("READ THIS BEFORE BELIEVING IT", g))
@@ -640,24 +684,27 @@ def render_report(params: SimParams, result: SimResult, summary: dict,
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m maya.backtest.monte_carlo",
-        description="Monte Carlo weekly-return simulation using Maya's real risk limits.",
+        description="Monte Carlo daily-return simulation using Maya's real risk limits.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     d = SimParams()
     p.add_argument("--win-rate", type=float, default=float(os.environ.get("MC_WIN_RATE", d.win_rate)),
                    help="probability a trade reaches its target")
-    p.add_argument("--trades-per-week", type=float,
-                   default=float(os.environ.get("MC_TRADES_PER_WEEK", d.trades_per_week_mean)),
-                   help="mean trade opportunities per week")
+    p.add_argument("--trades-per-day", type=float,
+                   default=float(os.environ.get("MC_TRADES_PER_DAY", d.trades_per_day_mean)),
+                   help="mean trade opportunities per day")
     p.add_argument("--stop-dist", type=float,
                    default=float(os.environ.get("MC_STOP_DIST_PCT", d.avg_stop_distance_pct)),
                    help="average stop distance, %% of price")
-    p.add_argument("--target", type=float, default=float(os.environ.get("MC_TARGET_PCT", 40.0)),
-                   help="weekly return target to evaluate, %%")
+    p.add_argument("--target", type=float,
+                   default=(float(os.environ["MC_TARGET_PCT"])
+                            if os.environ.get("MC_TARGET_PCT") else None),
+                   help="optional DAILY return target to evaluate, %%. Omit to just "
+                        "report the achievable distribution")
     p.add_argument("--simulations", type=int,
                    default=int(os.environ.get("MC_SIMULATIONS", d.simulations)),
                    help="independent runs")
-    p.add_argument("--weeks", type=int, default=d.weeks, help="weeks per run (compounded)")
+    p.add_argument("--days", type=int, default=d.days, help="trading days per run")
     p.add_argument("--risk-usd", type=float, default=d.risk_usd, help="USD risked to the stop (fixed_usd)")
     p.add_argument("--margin-usd", type=float, default=d.margin_usd,
                    help="USD of margin committed per trade (fixed_margin)")
@@ -691,10 +738,10 @@ def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     params = SimParams(
         win_rate=args.win_rate,
-        trades_per_week_mean=args.trades_per_week,
+        trades_per_day_mean=args.trades_per_day,
         avg_stop_distance_pct=args.stop_dist,
         simulations=args.simulations,
-        weeks=args.weeks,
+        days=args.days,
         risk_usd=args.risk_usd,
         margin_usd=args.margin_usd,
         start_equity=args.start_equity,
@@ -709,15 +756,15 @@ def main(argv: list[str] | None = None) -> None:
         compound=args.compound,
     )
     # Status goes to stderr so `--json` and `> file` stay clean.
-    total_weeks = params.simulations * params.weeks
-    print(f"Simulating {total_weeks:,} weeks "
-          f"({params.simulations:,} runs x {params.weeks} weeks)...",
+    total_days = params.simulations * params.days
+    print(f"Simulating {total_days:,} days "
+          f"({params.simulations:,} runs x {params.days} days)...",
           file=sys.stderr, flush=True)
 
     started = time.perf_counter()
     result = simulate_detailed(params)
     elapsed = time.perf_counter() - started
-    summary = summarize(result.weekly_returns, target_pct=args.target)
+    summary = summarize(result.daily_returns, target_pct=args.target)
     print(f"Done in {elapsed:.1f}s.", file=sys.stderr, flush=True)
 
     if args.json:
@@ -729,7 +776,7 @@ def main(argv: list[str] | None = None) -> None:
                 "pct_days_ended_by_cooldown": round(result.pct_days_ended_by_cooldown, 4),
                 "pct_weeks_halted_weekly_loss": round(result.pct_weeks_halted_weekly_loss, 4),
                 "pct_sims_hitting_equity_floor": round(result.pct_sims_hitting_equity_floor, 4),
-                "mean_trades_per_week": round(result.mean_trades_per_week, 3),
+                "mean_trades_per_day": round(result.mean_trades_per_day, 3),
             },
         }, indent=2))
         return

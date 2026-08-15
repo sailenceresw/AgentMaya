@@ -33,16 +33,55 @@ START → manage (L5) → signal (L2) → strategy (L3) → risk (L4) → execut
 
 ```
 maya/
+  agents/      # the desk — Atlas, Echo, Flow, Sentinel + Maya's conference
   data/        # L1 ingestion — simulated, scenario & ccxt feeds + models
-  signals/     # L2 CVD, volume profile, absorption, divergence, AMT phase
+  signals/     # L2 order flow, volume profile, absorption, AMT phase,
+               #    higher-timeframe folding, technicals, patterns
   strategy/    # L3 three setups, confluence scoring, optional LLM veto
   risk/        # L4 hard limits, kill switch, position sizing
   execution/   # L5 paper, ccxt & MetaMask brokers, position management
   journal/     # L6 SQLite trade journal + performance metrics
+  timeframe.py # single source of truth for timeframe parsing
   graph.py     # LangGraph StateGraph wiring the layers
   run.py       # ingestion loop / CLI entrypoint
-tests/         # indicators, risk limits, end-to-end pipeline
+tests/         # indicators, risk limits, agents, end-to-end pipeline
 ```
+
+## The desk
+
+Five pipeline agents run in order each candle; four analysts sit inside Maya
+and file an opinion on the same bar. Node keys are unchanged — these are names
+for humans reading logs.
+
+| Agent | Node | Duty |
+|---|---|---|
+| **Warden** | `manage` | Watches open positions; journals every close |
+| **Iris** | `signal` | Perception — order flow, profile, ATR, HTF, patterns |
+| **Maya** | `strategy` | Runs the conference and decides |
+| **Sentinel** | `risk` | Hard limits and kill switch; absolute veto |
+| **Hermes** | `execution` | Places orders; decides nothing |
+
+Analysts: **Atlas** (support/resistance zones, structure), **Echo**
+(candlestick patterns weighted by *where* they print), **Flow** (CVD,
+absorption, delta), and **Sentinel** again — so risk states its case rather
+than vetoing silently.
+
+Maya declines when the desk is split: two analysts pointing opposite ways is a
+reason to stand down, not to size small.
+
+> **The desk is an analysis layer, not a signal source.** It was measured to the
+> same standard as everything else and did not predict: `maya_verdict` held its
+> claimed direction in only 3/8, 4/8 and 2/8 sub-periods on BTC/ETH/SOL, and no
+> condition was correct-signed with `|t| > 2` and unanimous. So `desk.confer()`
+> is deliberately **not** wired into the trading decision — it exists to make
+> the system's reasoning readable, which it does well.
+
+## Order flow is real
+
+CVD comes from Binance kline field 9 (`taker_buy_base_volume`) — the exchange's
+own aggressive-buy total — so `delta = 2*taker_buy - volume` exactly. This
+module previously synthesised ticks from candle direction, which made every
+CVD-derived signal a function of the generator rather than the market.
 
 ## Venues
 
@@ -67,5 +106,30 @@ This is an **MVP**: it runs end-to-end in safe simulation mode by default. Live
 trading is gated behind an explicit interlock. See
 [`docs/RUNNING.md`](docs/RUNNING.md) for what is implemented vs. intentionally
 minimal before live use.
+
+## Measured performance — read this before trading it
+
+Tested on **real order flow**, 24 months (2024-08-10 → 2026-08-09), BTC/ETH/SOL,
+15m bars, split into 8 sub-periods of ~91 days.
+
+**No signal showed predictive power.** Conditional forward returns across nine
+signal conditions: nothing reached `|t| > 2` on any symbol. Backtests are
+negative at every configuration tested (best case 410 trades, 22.2% win rate,
+profit factor 0.38).
+
+Two findings worth knowing before changing anything:
+
+- **The CVD confirmation has the wrong sign.** Positive delta preceded
+  *negative* forward returns in 8 of 8 sub-periods on BTC and SOL — short-term
+  mean reversion. But `liquidity_sweep_choch` and `compression_breakout` both
+  require `cvd_1m > 0` to confirm a **long**. `maya/agents/flow.py` encodes the
+  measured reading; the legacy setups are deliberately left untouched.
+- **The effect is ~1 bps against ~10 bps of round-trip taker cost**, and it is
+  what makers earn and takers pay. Capturing it needs post-only limit entries,
+  not market orders.
+
+Do not tune thresholds or add indicators to fix this — nine factors have been
+measured and none discriminate. The open directions are: flip the CVD sign and
+re-test, move to maker execution, or change the premise entirely.
 
 > ⚠️ **Disclaimer:** Algorithmic trading involves substantial risk of capital loss. This repository contains architecture and design documentation only and does not guarantee profitability.

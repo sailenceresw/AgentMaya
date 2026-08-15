@@ -12,25 +12,48 @@ import numpy as np
 
 from maya.data.models import Candle
 from maya.signals import indicators as ind
-from maya.signals.models import SignalObject
+from maya.signals import oscillators as osc
+from maya.signals import patterns as pat
+from maya.signals import technicals as ta
+from maya.signals.models import HTFContext, SignalObject
+from maya.signals.timeframes import TimeframeAggregator, parse_timeframe
 
 WINDOW = 60  # candles retained for profile / phase calculations
+ATR_LENGTH = 14
+# Higher timeframes folded from the 1m stream for chart reading. 15m gives the
+# trend a 1m scalp is fighting or riding; 1h gives the structure that decides
+# whether a 15m move is continuation or retracement.
+DEFAULT_HTF = ("15m", "1h")
 
 
 class SignalProcessor:
-    def __init__(self, symbol: str, window: int = WINDOW) -> None:
+    def __init__(self, symbol: str, window: int = WINDOW,
+                 htf_timeframes: tuple[str, ...] | list[str] = DEFAULT_HTF) -> None:
         self.symbol = symbol
         self.candles: deque[Candle] = deque(maxlen=window)
         self.prices: deque[float] = deque(maxlen=window)
         self.cvd_series: deque[float] = deque(maxlen=window)
         self.cvd_session = 0.0
+        self.aggregators = [TimeframeAggregator(parse_timeframe(tf))
+                            for tf in htf_timeframes]
+        # Recomputed only when a higher-timeframe candle closes, not every 1m
+        # candle: the reading cannot change until a new HTF bar exists, and
+        # re-deriving EMAs and swings 15x more often than they can move is
+        # pure waste on the hot path.
+        self._htf: dict[str, HTFContext] = {}
+
+    def _update_htf(self, candle: Candle) -> None:
+        for agg in self.aggregators:
+            if agg.update(candle) is not None:
+                self._htf[agg.label] = ta.analyze(list(agg.closed), agg.label)
 
     def process(self, candle: Candle, funding_rate: float = 0.0,
                 long_short_ratio: float = 1.0) -> SignalObject:
         self.candles.append(candle)
         self.prices.append(candle.close)
+        self._update_htf(candle)
 
-        delta = ind.candle_delta(candle.trades)
+        delta = ind.delta_for(candle)
         self.cvd_session += delta
         self.cvd_series.append(self.cvd_session)
 
@@ -39,6 +62,9 @@ class SignalProcessor:
         absorption = ind.detect_absorption(candles)
         divergence = ind.cvd_divergence(list(self.prices), list(self.cvd_series))
         phase = ind.amt_phase(candles, list(self.cvd_series))
+
+        atr_value = osc.atr(candles, ATR_LENGTH)
+        matches = pat.detect_patterns(candles)
 
         vols = np.array([c.volume for c in candles])
         avg_volume = float(vols.mean()) if len(vols) else candle.volume
@@ -62,4 +88,8 @@ class SignalProcessor:
             volume=candle.volume,
             avg_volume=avg_volume,
             range_pct=range_pct,
+            htf=dict(self._htf),
+            atr=atr_value,
+            patterns=[m.name for m in matches],
+            pattern_bias=pat.pattern_bias(matches),
         )

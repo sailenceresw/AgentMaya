@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Iterator
 
 from loguru import logger
 
 from maya.backtest.data_loader import fetch_historical_klines, historical_candles
+from maya.backtest.funding import FundingSchedule, fetch_funding_rates
 from maya.backtest.metrics import BacktestMetrics, compute_metrics
 from maya.config import Settings, get_settings
 from maya.data.models import Candle
@@ -38,16 +40,30 @@ _DAY_MS = 86_400_000
 
 
 def run_backtest(settings: Settings, candles: Iterator[Candle],
-                  journal_path: str = ":memory:") -> BacktestMetrics:
+                  journal_path: str = ":memory:",
+                  total: int | None = None,
+                  progress_every: int = 5_000,
+                  funding=None) -> BacktestMetrics:
     journal = TradeJournal(db_path=journal_path)
-    nodes = TradingNodes(settings, journal, equity=settings.start_equity, now_ts=0)
+    nodes = TradingNodes(settings, journal, equity=settings.start_equity, now_ts=0,
+                         funding=funding)
     graph = build_graph(nodes)
 
     daily_equity: dict[int, float] = {}
+    started = time.monotonic()
     n = 0
     for candle in candles:
         graph.invoke({"candle": candle})
         n += 1
+        if progress_every and n % progress_every == 0:
+            # A months-long 1m backtest is a multi-hour run; without this it
+            # prints nothing at all until the final report.
+            elapsed = time.monotonic() - started
+            rate = n / elapsed
+            eta = f", eta {(total - n) / rate / 60:.0f}m" if total else ""
+            logger.info("  {}{} candles | {:.0f}/s | equity ${:.2f}{}",
+                        n, f"/{total}" if total else "", rate,
+                        nodes.risk.account.equity, eta)
         day = (candle.timestamp // _DAY_MS) * _DAY_MS
         daily_equity[day] = nodes.risk.account.equity
         if nodes.risk.account.state.value == "halted":
@@ -116,7 +132,16 @@ def main() -> None:
         logger.critical("No historical data available for the requested range.")
         sys.exit(2)
 
-    metrics = run_backtest(settings, historical_candles(rows))
+    funding_cache = os.environ.get(
+        "MAYA_FUNDING_CACHE",
+        f"data/funding_{settings.symbol}_{start}_{end}.csv",
+    )
+    funding = FundingSchedule(
+        fetch_funding_rates(settings, start_ms, end_ms, cache_path=funding_cache))
+    logger.info("Funding schedule: {} settlements", len(funding))
+
+    metrics = run_backtest(settings, historical_candles(rows), total=len(rows),
+                           funding=funding)
     _print_report(metrics, start, end)
     sys.exit(0 if all(metrics.passes_gate().values()) else 1)
 

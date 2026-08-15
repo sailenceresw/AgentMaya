@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     max_candles: int = 200
     start_equity: float = 1000.0
 
+    # Higher timeframes folded from the 1m stream for chart reading (trend,
+    # market structure, S/R). Comma-separated; blank disables HTF analysis and
+    # with it the htf_alignment confluence factor.
+    htf_timeframes: str = "15m,1h"
+
     # -- position sizing ---------------------------------------------------- #
     # "margin" : commit ``margin_per_trade_usd`` of collateral at ``leverage``,
     #            so notional = margin x leverage. The loss on a stop-out is
@@ -75,7 +80,13 @@ class Settings(BaseSettings):
 
     # Minimum expected ROI **on margin** (i.e. the price move multiplied by
     # leverage), not the raw price move — see TradeIntent.roi_on_margin_pct.
-    min_roi_pct: float = 40.0
+    #
+    # Read this as a price move before changing it: at the default 20x, 10%
+    # on margin is a 0.5% move to TP1, which is a real but reachable 1m scalp.
+    # The previous default of 40% demanded a **2% move to target on a
+    # 1-minute chart** — a swing-trade distance on a scalping timeframe — and
+    # rejected essentially every candidate the strategy produced.
+    min_roi_pct: float = 10.0
 
     # When true (and mode==sim), replay scripted textbook setups instead of the
     # random walk — useful for demos and integration tests.
@@ -116,6 +127,21 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # -- Layer 7 monitoring API / dashboard --------------------------------- #
+    # Off by default: this puts a trading system on a network socket, so it
+    # should be a deliberate choice rather than something that happens because
+    # you ran the agent.
+    api_enabled: bool = False
+    # Loopback by default. Set 0.0.0.0 to reach it from a phone on the same
+    # network — and understand that anything else on that network can too.
+    api_host: str = "127.0.0.1"
+    api_port: int = 8787
+    # Required whenever the API is enabled; the server refuses to start
+    # without it rather than defaulting to unauthenticated. Reads MAYA_API_TOKEN
+    # via the env_prefix above — no explicit alias, which would otherwise stop
+    # the field being set by name in code and tests.
+    api_token: str = ""
+
     # Credentials are read without the MAYA_ prefix.
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", validation_alias="BINANCE_API_SECRET")
@@ -140,6 +166,40 @@ class Settings(BaseSettings):
         if v not in ("margin", "risk"):
             raise ValueError(f"sizing_mode={v!r} must be 'margin' or 'risk'")
         return v
+
+    @property
+    def htf_list(self) -> list[str]:
+        """Higher timeframes to analyse, always strictly above ``timeframe``.
+
+        A "higher" timeframe equal to (or below) the entry timeframe is not a
+        second opinion — it is the same series, so ``htf_alignment`` would
+        confirm whatever the entry bar already said and score a free point on
+        every trade. Configured entries at or below the entry timeframe are
+        therefore dropped, and if that leaves nothing, the defaults step up
+        from the entry timeframe instead of silently disabling the factor.
+        """
+        from maya.timeframe import label_for, parse_timeframe
+
+        try:
+            base = parse_timeframe(self.timeframe)
+        except ValueError:
+            base = 1
+
+        out: list[str] = []
+        for tf in (t.strip() for t in self.htf_timeframes.split(",")):
+            if not tf:
+                continue
+            try:
+                if parse_timeframe(tf) > base:
+                    out.append(tf)
+            except ValueError:
+                continue  # unparseable entries are ignored, not fatal
+
+        if out or not self.htf_timeframes.strip():
+            return out  # blank config means "disabled", and stays disabled
+        # Everything configured was too low: scale the usual 15x/60x-of-1m
+        # relationship up from whatever the entry timeframe actually is.
+        return [label_for(base * 4), label_for(base * 16)]
 
     @property
     def is_live(self) -> bool:

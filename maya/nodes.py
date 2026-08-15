@@ -28,9 +28,15 @@ class TradingNodes:
     """Holds stateful services and exposes them as LangGraph node callables."""
 
     def __init__(self, settings: Settings, journal: TradeJournal,
-                 equity: float | None = None, now_ts: int | None = None) -> None:
+                 equity: float | None = None, now_ts: int | None = None,
+                 funding=None) -> None:
         self.settings = settings
-        self.processor = SignalProcessor(settings.symbol)
+        self.processor = SignalProcessor(settings.symbol,
+                                         htf_timeframes=settings.htf_list)
+        # Optional funding-rate lookup (maya.backtest.funding.FundingSchedule).
+        # Absent, funding stays 0.0 and the funding confluence factor simply
+        # never fires — which is what it did unconditionally before.
+        self.funding = funding
         self.strategy = StrategyEngine(settings)
         equity = settings.start_equity if equity is None else equity
         now_ts = int(time.time() * 1000) if now_ts is None else now_ts
@@ -57,7 +63,8 @@ class TradingNodes:
 
     def signal_node(self, state: TradingState) -> TradingState:
         candle = state["candle"]
-        signal = self.processor.process(candle)
+        funding_rate = self.funding.rate_at(candle.timestamp) if self.funding else 0.0
+        signal = self.processor.process(candle, funding_rate=funding_rate)
         return {"signal": signal}
 
     def strategy_node(self, state: TradingState) -> TradingState:

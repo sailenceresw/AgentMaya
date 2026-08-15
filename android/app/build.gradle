@@ -1,0 +1,29 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.maya.monitor'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.maya.monitor"
+        minSdk 24           // Android 7.0 — covers essentially every live device
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        // Debug only. A release build would need a signing key you own; a
+        // debug APK installs fine via "unknown sources" and is the right
+        // artifact for a private tool you sideload onto your own phone.
+        debug { minifyEnabled false }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// No dependencies: plain android.app.Activity and java.net.HttpURLConnection.
+dependencies { }

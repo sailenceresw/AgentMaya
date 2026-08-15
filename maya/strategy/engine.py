@@ -11,6 +11,7 @@ from collections import deque
 from loguru import logger
 
 from maya.config import RiskLimits, Settings
+from maya.signals import technicals as ta
 from maya.signals.models import SignalObject
 from maya.strategy import setups as setup_mod
 from maya.strategy.confluence import score_confluence
@@ -62,7 +63,17 @@ class StrategyEngine:
 
         best: TradeIntent | None = None
         for intent in candidates:
-            score, factors = score_confluence(intent, sig)
+            # Passed by keyword: score_confluence takes several optional
+            # factors after `sig`, and calling it positionally silently left
+            # htf_alignment stuck at its default of False, capping the
+            # achievable score below MIN_CONFLUENCE_SCORE.
+            score, factors = score_confluence(
+                intent, sig,
+                htf_aligned=ta.aligned(sig.htf, intent.direction),
+                liquidation_target=ta.targets_liquidity(
+                    sig.htf, intent.direction,
+                    intent.entry_price, intent.take_profit_1),
+            )
             intent.confluence_score = score
             intent.confluences = factors
             if score < RiskLimits.MIN_CONFLUENCE_SCORE:

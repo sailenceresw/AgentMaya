@@ -80,3 +80,31 @@ def test_gate_fails_on_drawdown_even_if_profitable():
     gate = m.passes_gate()
     assert gate["max_drawdown < 20%"] is False
     assert not all(gate.values())
+
+
+# -- funding schedule ------------------------------------------------------- #
+from maya.backtest.funding import FundingSchedule
+
+
+def test_funding_schedule_uses_the_last_settled_rate():
+    s = FundingSchedule([(1_000, 0.0001), (9_000, -0.0002)])
+    assert s.rate_at(5_000) == 0.0001     # between settlements
+    assert s.rate_at(9_000) == -0.0002    # exactly on one
+    assert s.rate_at(50_000) == -0.0002   # after the last
+
+
+def test_funding_schedule_never_reads_the_next_settlement():
+    """The upcoming rate is not knowable at that moment; using it would leak
+    the future into every signal that touches funding."""
+    s = FundingSchedule([(10_000, 0.05)])
+    assert s.rate_at(9_999) == 0.0
+
+
+def test_empty_funding_schedule_is_flat_not_an_error():
+    assert FundingSchedule([]).rate_at(123) == 0.0
+    assert len(FundingSchedule(None)) == 0
+
+
+def test_funding_schedule_sorts_unordered_input():
+    s = FundingSchedule([(9_000, -0.0002), (1_000, 0.0001)])
+    assert s.rate_at(5_000) == 0.0001

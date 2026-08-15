@@ -113,7 +113,21 @@ class PositionMonitor:
         )
         if result is None:
             return
-        self.journal.record(result, result.position.confluences)
+
+        # Order matters, and so does the isolation. The risk update is what
+        # drives consecutive_losses, the daily-loss halt and the kill switch;
+        # journaling is bookkeeping. Previously a journal failure here
+        # propagated into the poll loop's catch-all and skipped
+        # on_trade_closed entirely, so a real losing fill never reached the
+        # risk limits. Journal failures are now contained.
+        try:
+            self.journal.record(result, result.position.confluences)
+        except Exception as exc:  # noqa: BLE001 - must not block the risk update
+            logger.error("could not journal exchange-fill close for {} (pnl={:.2f}) — "
+                         "risk accounting still applied, but this trade is missing "
+                         "from the journal and from restart restoration: {}",
+                         result.position.symbol, result.pnl_usdt, exc)
+
         self.risk.on_trade_closed(result.pnl_usdt, now_ts)
         logger.info("Position monitor detected exchange fill: {} {} pnl={:.2f}",
                     result.position.setup_name, result.result, result.pnl_usdt)

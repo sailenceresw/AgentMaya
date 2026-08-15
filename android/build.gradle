@@ -1,0 +1,7 @@
+// Deliberately dependency-light: the Android Gradle Plugin and nothing else.
+// No Kotlin plugin, no AppCompat, no networking library — the app uses only
+// platform APIs. Fewer moving parts is worth more here than terser code,
+// because this has to build reliably on a machine that is not a CI runner.
+plugins {
+    id 'com.android.application' version '8.11.0' apply false
+}

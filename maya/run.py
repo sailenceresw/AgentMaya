@@ -95,6 +95,32 @@ def _startup_reconciliation(settings: Settings) -> float:
     return settings.start_equity
 
 
+def _start_api(settings: Settings, nodes: TradingNodes, journal: TradeJournal,
+               processed_fn) -> "object | None":
+    """Start the Layer 7 monitoring API, if enabled.
+
+    Never fatal: a dashboard failing to start is not a reason to stop an agent
+    that is managing real positions, so any problem is logged and trading
+    continues without it.
+    """
+    if not settings.api_enabled:
+        return None
+    try:
+        from maya.api.server import MonitorServer, build_snapshot
+
+        server = MonitorServer(
+            settings,
+            snapshot_fn=lambda: build_snapshot(settings, nodes, journal, processed_fn()),
+            trades_fn=journal.recent,
+            halt_fn=lambda reason: nodes.risk.manual_halt(),
+        )
+        server.start()
+        return server
+    except Exception as exc:  # noqa: BLE001 - the dashboard must never stop trading
+        logger.error("monitoring API failed to start — trading continues: {}", exc)
+        return None
+
+
 def main() -> None:
     settings = get_settings()
     _configure_logging(settings)
@@ -120,6 +146,7 @@ def main() -> None:
         monitor.start()
 
     processed = 0
+    api = _start_api(settings, nodes, journal, lambda: processed)
     try:
         for candle in feed.candles():
             graph.invoke({"candle": candle})
@@ -133,6 +160,8 @@ def main() -> None:
     finally:
         if monitor is not None:
             monitor.stop()
+        if api is not None:
+            api.stop()
 
         # Flatten any open position at the last seen price (clean shutdown).
         if nodes.execution.has_position:

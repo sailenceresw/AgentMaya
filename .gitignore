@@ -22,7 +22,8 @@ __pycache__/
 *.sqlite3
 
 # Cached historical klines downloaded by the backtester
-data/
+# Anchored to the repo root so the maya/data source package is NOT ignored.
+/data/
 
 # Agent skill packs installed by `npx skills add` (reinstallable, not source)
 .agents/

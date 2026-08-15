@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phone-first single column. Two panels live here and only one is visible at a
+  time: `setup` for entering the agent's address, `dashboard` for everything
+  else. Keeping them in one Activity avoids navigation state to get wrong when
+  the connection drops.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0B0F14"
+    android:fitsSystemWindows="true">
+
+    <!-- ============================ SETUP ============================ -->
+    <ScrollView
+        android:id="@+id/setup"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:padding="20dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Connect to Maya"
+                android:textColor="#E6EDF3"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:paddingBottom="6dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Enter the address of the machine running the agent. Both devices must be on the same network, and the agent must be started with MAYA_API_ENABLED=true and MAYA_API_HOST=0.0.0.0."
+                android:textColor="#8B9BB0"
+                android:textSize="14sp"
+                android:paddingBottom="20dp" />
+
+            <TextView style="@style/Label" android:text="Host (agent's LAN IP)" />
+            <EditText
+                android:id="@+id/host"
+                style="@style/Input"
+                android:hint="192.168.1.20"
+                android:inputType="text"
+                android:autofillHints="" />
+
+            <TextView style="@style/Label" android:text="Port" />
+            <EditText
+                android:id="@+id/port"
+                style="@style/Input"
+                android:text="8787"
+                android:inputType="number"
+                android:autofillHints="" />
+
+            <TextView style="@style/Label" android:text="API token (MAYA_API_TOKEN)" />
+            <EditText
+                android:id="@+id/token"
+                style="@style/Input"
+                android:hint="paste the token"
+                android:inputType="textPassword"
+                android:autofillHints="" />
+
+            <Button
+                android:id="@+id/connect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Connect"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/setupError"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:textColor="#F85149"
+                android:textSize="14sp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ========================== DASHBOARD ========================== -->
+    <LinearLayout
+        android:id="@+id/dashboard"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Maya"
+                android:textColor="#E6EDF3"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/configPill"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#8B9BB0"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Equity -->
+                <LinearLayout style="@style/Card">
+                    <TextView style="@style/CardTitle" android:text="EQUITY" />
+                    <TextView
+                        android:id="@+id/equity"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="#E6EDF3"
+                        android:textSize="34sp"
+                        android:textStyle="bold" />
+                    <TextView
+                        android:id="@+id/pnl"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+                    <TextView
+                        android:id="@+id/state"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:paddingLeft="10dp"
+                        android:paddingRight="10dp"
+                        android:paddingTop="3dp"
+                        android:paddingBottom="3dp"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Position -->
+                <LinearLayout style="@style/Card">
+                    <TextView style="@style/CardTitle" android:text="OPEN POSITION" />
+                    <TextView
+                        android:id="@+id/position"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#E6EDF3"
+                        android:textSize="14sp"
+                        android:lineSpacingExtra="4dp" />
+                </LinearLayout>
+
+                <!-- Run stats -->
+                <LinearLayout style="@style/Card">
+                    <TextView style="@style/CardTitle" android:text="THIS RUN" />
+                    <TextView
+                        android:id="@+id/stats"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#E6EDF3"
+                        android:textSize="14sp"
+                        android:lineSpacingExtra="4dp" />
+                </LinearLayout>
+
+                <!-- Trades -->
+                <LinearLayout style="@style/Card">
+                    <TextView style="@style/CardTitle" android:text="RECENT TRADES" />
+                    <TextView
+                        android:id="@+id/trades"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#E6EDF3"
+                        android:textSize="13sp"
+                        android:lineSpacingExtra="4dp"
+                        android:fontFamily="monospace" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/halt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="6dp"
+                    android:text="HALT TRADING"
+                    android:textColor="#F85149"
+                    android:textStyle="bold"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Halting stops new trades. It does not close an open position — do that on the exchange."
+                    android:textColor="#8B9BB0"
+                    android:textSize="12sp"
+                    android:gravity="center"
+                    android:paddingBottom="10dp" />
+
+                <Button
+                    android:id="@+id/settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Connection settings"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/footer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="20dp"
+                    android:gravity="center"
+                    android:textColor="#8B9BB0"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+</FrameLayout>

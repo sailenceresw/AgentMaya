@@ -1,4 +1,4 @@
-"""Tests for the Monte Carlo weekly-return simulator — checks the fee math
+"""Tests for the Monte Carlo daily-return simulator — checks the fee math
 against the real FEE_RATE constant, pins the sizing/leverage semantics, and
 sanity-checks the distribution shape with a fixed seed (deterministic, not
 flaky)."""
@@ -6,7 +6,13 @@ import statistics
 
 import pytest
 
-from maya.backtest.monte_carlo import SimParams, fee_pct_of_equity, simulate, summarize
+from maya.backtest.monte_carlo import (
+    SimParams,
+    fee_pct_of_equity,
+    simulate,
+    simulate_detailed,
+    summarize,
+)
 from maya.execution.engine import FEE_RATE
 
 
@@ -24,16 +30,28 @@ def test_tighter_stop_means_bigger_notional_means_more_fee_drag():
 
 
 def test_simulate_is_deterministic_with_a_fixed_seed():
-    p = SimParams(simulations=50, weeks=10, seed=7)
+    p = SimParams(simulations=50, days=50, seed=7)
     a = simulate(p)
     b = simulate(p)
     assert a == b
 
 
-def test_higher_win_rate_produces_higher_mean_weekly_return():
-    low = simulate(SimParams(win_rate=0.30, simulations=300, weeks=10, seed=1))
-    high = simulate(SimParams(win_rate=0.55, simulations=300, weeks=10, seed=1))
-    assert summarize(high)["mean_weekly_return_pct"] > summarize(low)["mean_weekly_return_pct"]
+def test_higher_win_rate_produces_higher_mean_daily_return():
+    low = simulate(SimParams(win_rate=0.30, simulations=300, days=50, seed=1))
+    high = simulate(SimParams(win_rate=0.55, simulations=300, days=50, seed=1))
+    assert summarize(high)["mean_daily_return_pct"] > summarize(low)["mean_daily_return_pct"]
+
+def _pct_weeks_hitting(params: SimParams, target_pct: float) -> float:
+    """Share of simulated *weeks* clearing a target.
+
+    The headline unit is now a day, but these three tests pin a sizing
+    regression whose signature was always stated weekly, so they read
+    ``weekly_returns`` directly rather than restate the thresholds in daily
+    terms and lose the link to the bug they guard.
+    """
+    weeks = simulate_detailed(params).weekly_returns
+    return sum(1 for w in weeks if w >= target_pct) / len(weeks) * 100
+
 
 def test_realistic_assumptions_rarely_hit_40pct_in_a_week():
     """A 40%/week target is rare but NOT the ~0% the old model reported.
@@ -47,10 +65,9 @@ def test_realistic_assumptions_rarely_hit_40pct_in_a_week():
     +45%: a 40% week needs a good run of ~5 trades, not a miracle. It lands
     around 6% of weeks — roughly 1 in 17.
     """
-    p = SimParams(win_rate=0.45, trades_per_week_mean=8, simulations=2000, weeks=10, seed=3,
+    p = SimParams(win_rate=0.45, trades_per_day_mean=1.6, simulations=2000, days=50, seed=3,
                   risk_model="fixed_usd", risk_usd=20.0)
-    summary = summarize(simulate(p), target_pct=40.0)
-    hit_rate = summary["pct_weeks_hitting_40pct_target"]
+    hit_rate = _pct_weeks_hitting(p, 40.0)
     assert 3.0 < hit_rate < 10.0, hit_rate
 
 
@@ -58,20 +75,34 @@ def test_legacy_half_percent_risk_reproduces_the_old_near_zero_result():
     """Pins the cause of the change above: switch the risk model back to the
     legacy 0.5%-of-equity reading and the 'essentially never' result returns.
     Guards against anyone silently reverting the sizing fix."""
-    p = SimParams(win_rate=0.45, trades_per_week_mean=8, simulations=2000, weeks=10,
+    p = SimParams(win_rate=0.45, trades_per_day_mean=1.6, simulations=2000, days=50,
                   seed=3, risk_model="fixed_pct", risk_pct=0.5)
-    summary = summarize(simulate(p), target_pct=40.0)
-    assert summary["pct_weeks_hitting_40pct_target"] < 0.1
+    assert _pct_weeks_hitting(p, 40.0) < 0.1
 
 
 def test_maxed_out_best_case_reaches_40pct_a_meaningful_share_of_weeks():
     # Absolute ceiling: 49% win rate (top of the spec's realistic range) AND
     # maxed out at the hard trade-frequency cap every week.
-    p = SimParams(win_rate=0.49, trades_per_week_mean=25, max_trades_per_week=25,
-                 simulations=2000, weeks=10, seed=5,
+    p = SimParams(win_rate=0.49, trades_per_day_mean=5.0, max_trades_per_day=5,
+                 simulations=2000, days=50, seed=5,
                  risk_model="fixed_usd", risk_usd=20.0)
-    summary = summarize(simulate(p), target_pct=40.0)
-    assert summary["pct_weeks_hitting_40pct_target"] > 5.0
+    assert _pct_weeks_hitting(p, 40.0) > 5.0
+
+
+def test_daily_target_is_optional_and_reported_when_given():
+    """The first question is what the architecture *can* do, so summarize()
+    must not require a target — but must evaluate one when asked."""
+    p = SimParams(simulations=400, days=50, seed=13)
+    returns = simulate(p)
+    assert not any("target" in k for k in summarize(returns))
+    assert "pct_days_hitting_5pct_target" in summarize(returns, target_pct=5.0)
+
+
+def test_days_are_trimmed_to_exactly_the_number_requested():
+    """`weeks` rounds up to cover `days`, so a non-multiple-of-5 request must
+    not silently report a larger sample than it was asked for."""
+    p = SimParams(simulations=10, days=7, seed=19)
+    assert summarize(simulate(p))["n_days_simulated"] == 7 * 10
 
 
 def test_risk_limits_materially_reduce_trade_count():
@@ -79,11 +110,11 @@ def test_risk_limits_materially_reduce_trade_count():
     taken and the loss tail is fatter."""
     from maya.backtest.monte_carlo import simulate_detailed
 
-    guarded = simulate_detailed(SimParams(simulations=400, weeks=10, seed=17))
+    guarded = simulate_detailed(SimParams(simulations=400, days=50, seed=17))
     unguarded = simulate_detailed(
-        SimParams(simulations=400, weeks=10, seed=17, enforce_risk_limits=False))
+        SimParams(simulations=400, days=50, seed=17, enforce_risk_limits=False))
 
-    assert unguarded.mean_trades_per_week > guarded.mean_trades_per_week
+    assert unguarded.mean_trades_per_day > guarded.mean_trades_per_day
     assert min(unguarded.weekly_returns) < min(guarded.weekly_returns)
 
 
@@ -94,7 +125,7 @@ def test_cooldown_persists_across_days_until_a_win():
     from maya.backtest.monte_carlo import simulate_detailed
 
     result = simulate_detailed(
-        SimParams(win_rate=0.20, trades_per_week_mean=15, simulations=400, weeks=10, seed=23))
+        SimParams(win_rate=0.20, trades_per_day_mean=3.0, simulations=400, days=50, seed=23))
     assert result.pct_days_ended_by_cooldown > 20.0
 
 
@@ -106,19 +137,19 @@ def test_notional_cap_limits_risk_at_low_equity():
     from maya.backtest.monte_carlo import simulate_detailed
 
     tiny = simulate_detailed(SimParams(start_equity=100.0, risk_usd=20.0,
-                                       simulations=300, weeks=4, seed=31))
+                                       simulations=300, days=20, seed=31))
     # If the cap were ignored, single trades would swing ~20% and the worst
     # week would blow far past the weekly kill switch.
     assert min(tiny.weekly_returns) > -25.0
 
 
-def test_uncompounded_result_is_independent_of_week_count():
+def test_uncompounded_result_is_independent_of_day_count():
     """The default (non-compounding) mode must answer the same question
-    regardless of how many weeks are requested — that is the whole point of
+    regardless of how many days are requested — that is the whole point of
     not compounding fixed-USD risk."""
-    short = summarize(simulate(SimParams(simulations=800, weeks=5, seed=41)))
-    long = summarize(simulate(SimParams(simulations=800, weeks=40, seed=41)))
-    assert abs(short["mean_weekly_return_pct"] - long["mean_weekly_return_pct"]) < 0.5
+    short = summarize(simulate(SimParams(simulations=800, days=25, seed=41)))
+    long = summarize(simulate(SimParams(simulations=800, days=200, seed=41)))
+    assert abs(short["mean_daily_return_pct"] - long["mean_daily_return_pct"]) < 0.5
 
 
 def test_leverage_does_not_change_pnl_when_risk_is_fixed():
@@ -126,11 +157,11 @@ def test_leverage_does_not_change_pnl_when_risk_is_fixed():
     and a fixed risk amount, position size is set by the stop distance, so
     5x and 20x produce *identical* P&L. Leverage only changes margin locked
     and where liquidation sits."""
-    kw = dict(simulations=600, weeks=8, seed=77, risk_model="fixed_usd", risk_usd=20.0)
+    kw = dict(simulations=600, days=40, seed=77, risk_model="fixed_usd", risk_usd=20.0)
     low = summarize(simulate(SimParams(leverage=5, **kw)))
     high = summarize(simulate(SimParams(leverage=20, **kw)))
-    assert low["mean_weekly_return_pct"] == high["mean_weekly_return_pct"]
-    assert low["worst_week_pct"] == high["worst_week_pct"]
+    assert low["mean_daily_return_pct"] == high["mean_daily_return_pct"]
+    assert low["worst_day_pct"] == high["worst_day_pct"]
 
 
 def test_leverage_only_changes_margin_and_liquidation_distance():
@@ -188,7 +219,7 @@ def test_stop_wider_than_liquidation_buffer_forfeits_the_whole_margin():
     from maya.backtest.monte_carlo import simulate_detailed
 
     p = SimParams(leverage=50, avg_stop_distance_pct=3.0, win_rate=0.0,
-                  simulations=200, weeks=2, seed=91)
+                  simulations=200, days=10, seed=91)
     assert p.stop_to_liquidation_ratio > 1.0
     result = simulate_detailed(p)
     # Every trade loses; losses are margin-sized, so weeks are deeply negative.
@@ -232,14 +263,14 @@ def test_tighter_stops_are_eaten_by_costs():
 def test_compounding_grows_equity_over_a_year():
     from maya.backtest.monte_carlo import simulate_detailed
 
-    result = simulate_detailed(SimParams(simulations=400, weeks=52, seed=43, compound=True))
+    result = simulate_detailed(SimParams(simulations=400, days=260, seed=43, compound=True))
     assert statistics.median(result.final_equities) > SimParams().start_equity
 
 
 def test_summary_percentiles_are_ordered():
-    p = SimParams(simulations=500, weeks=10, seed=11)
+    p = SimParams(simulations=500, days=50, seed=11)
     summary = summarize(simulate(p))
-    assert summary["p5_weekly_return_pct"] <= summary["p25_weekly_return_pct"]
-    assert summary["p25_weekly_return_pct"] <= summary["median_weekly_return_pct"]
-    assert summary["median_weekly_return_pct"] <= summary["p75_weekly_return_pct"]
-    assert summary["p75_weekly_return_pct"] <= summary["p95_weekly_return_pct"]
+    assert summary["p5_daily_return_pct"] <= summary["p25_daily_return_pct"]
+    assert summary["p25_daily_return_pct"] <= summary["median_daily_return_pct"]
+    assert summary["median_daily_return_pct"] <= summary["p75_daily_return_pct"]
+    assert summary["p75_daily_return_pct"] <= summary["p95_daily_return_pct"]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -52,10 +53,23 @@ def _utc_day_start_ms(now_ts: int) -> int:
 
 class TradeJournal:
     def __init__(self, db_path: str = "maya_journal.db") -> None:
-        self.conn = sqlite3.connect(db_path)
+        # The journal is written from more than one thread: the candle-driven
+        # graph runs on the main thread, PositionMonitor writes exchange-fill
+        # closes from its poll thread, and the Layer 7 API reads from its
+        # handler threads. sqlite3 rejects cross-thread use by default, which
+        # made every monitor-detected close raise ProgrammingError inside the
+        # monitor's catch-all — the trade went unjournaled *and*
+        # risk.on_trade_closed never ran, so consecutive_losses, daily PnL and
+        # the kill switch silently stopped updating on testnet/live.
+        #
+        # check_same_thread=False lifts the restriction; the lock below is
+        # what actually makes concurrent use safe.
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(_SCHEMA)
-        self.conn.commit()
+        self._lock = threading.RLock()
+        with self._lock:
+            self.conn.executescript(_SCHEMA)
+            self.conn.commit()
         # Ids written by *this* process. The journal is deliberately durable
         # across restarts (it backs the spec-8.4 risk-state restoration), so
         # "how did this run do" cannot be answered by querying the whole
@@ -70,7 +84,8 @@ class TradeJournal:
         pnl_pct = result.pnl_usdt / pos.notional * 100 if pos.notional else 0.0
         trade_id = str(uuid.uuid4())
         self._session_ids.append(trade_id)
-        self.conn.execute(
+        with self._lock:
+            self.conn.execute(
             "INSERT INTO trades VALUES "
             "(:id,:te,:tx,:sym,:dir,:setup,:ep,:xp,:sl,:tp,:size,:lev,"
             ":pnl,:pnlpct,:fees,:rrr,:rrp,:res,:cs,:conf,:reason)",
@@ -86,8 +101,8 @@ class TradeJournal:
                 "res": result.result, "cs": pos.confluence_score,
                 "conf": json.dumps(confluences), "reason": result.reason,
             },
-        )
-        self.conn.commit()
+            )
+            self.conn.commit()
 
     # -- state reconciliation (spec section 8.4) ---------------------------- #
     # These back the risk-floor counters (trades_today, consecutive_losses,
@@ -96,10 +111,11 @@ class TradeJournal:
     # state from what actually happened, instead of amnesia'ing back to a
     # clean (more permissive) slate.
     def trades_since(self, since_ts: int) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            "SELECT * FROM trades WHERE timestamp_exit >= ? ORDER BY timestamp_exit ASC",
-            (since_ts,),
-        ).fetchall()
+        with self._lock:
+            return self.conn.execute(
+                "SELECT * FROM trades WHERE timestamp_exit >= ? ORDER BY timestamp_exit ASC",
+                (since_ts,),
+            ).fetchall()
 
     def trades_today(self, now_ts: int | None = None) -> int:
         now_ts = now_ts if now_ts is not None else int(time.time() * 1000)
@@ -113,9 +129,10 @@ class TradeJournal:
     def consecutive_losses(self) -> int:
         """Losing streak walking back from the most recently closed trade,
         all-time (a streak doesn't reset just because midnight UTC passed)."""
-        rows = self.conn.execute(
-            "SELECT result FROM trades ORDER BY timestamp_exit DESC"
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT result FROM trades ORDER BY timestamp_exit DESC"
+            ).fetchall()
         streak = 0
         for r in rows:
             if r["result"] == "loss":
@@ -145,12 +162,14 @@ class TradeJournal:
             if not self._session_ids:
                 return {"trades": 0}
             placeholders = ",".join("?" * len(self._session_ids))
-            rows = self.conn.execute(
-                f"SELECT * FROM trades WHERE id IN ({placeholders})",
-                self._session_ids,
-            ).fetchall()
+            with self._lock:
+                rows = self.conn.execute(
+                    f"SELECT * FROM trades WHERE id IN ({placeholders})",
+                    self._session_ids,
+                ).fetchall()
         else:
-            rows = self.conn.execute("SELECT * FROM trades").fetchall()
+            with self._lock:
+                rows = self.conn.execute("SELECT * FROM trades").fetchall()
         n = len(rows)
         if n == 0:
             return {"trades": 0}
@@ -174,5 +193,16 @@ class TradeJournal:
             "total_fees": round(sum(r["fees_usdt"] for r in rows), 2),
         }
 
+    def recent(self, limit: int = 20) -> list[dict]:
+        """Most recently closed trades, newest first — for the Layer 7 API."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT setup_name, direction, pnl_usdt, result, exit_reason, "
+                "timestamp_exit FROM trades ORDER BY timestamp_exit DESC LIMIT ?",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()

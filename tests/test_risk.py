@@ -197,3 +197,104 @@ def test_run_diagnostics_uses_supported_binance_methods(monkeypatch):
     assert report.last_price == 100.0
     assert report.open_positions[0]["contracts"] == 1.0
     assert report.open_orders[0]["id"] == 1
+
+
+# -- periodic limit rollover ------------------------------------------------ #
+# Regression: trades_today was only ever incremented and day/week_start_equity
+# were only ever set at construction, which silently turned three *periodic*
+# limits into lifetime ones — MAX_TRADES_PER_DAY became a cap of 5 trades for
+# the life of the process, and the "daily"/"weekly" loss limits measured
+# drawdown from session start forever.
+_DAY = 86_400_000
+
+
+def _spend_daily_trade_budget(rm, ts=0):
+    for _ in range(RiskLimits.MAX_TRADES_PER_DAY):
+        assert rm.screen(_intent(), ts).approved
+        rm.on_trade_opened()
+        rm.on_trade_closed(+1.0, ts)  # a win: no cooldown, no consecutive losses
+
+
+def test_daily_trade_cap_resets_on_the_next_day():
+    rm = RiskManager(_settings(), equity=1000)
+    _spend_daily_trade_budget(rm)
+    assert not rm.screen(_intent(), 0).approved  # budget spent today
+
+    assert rm.screen(_intent(), _DAY).approved
+    assert rm.account.trades_today == 0
+
+
+def test_daily_trade_cap_is_not_a_lifetime_cap():
+    """A month later the agent must still be allowed to trade."""
+    rm = RiskManager(_settings(), equity=1000)
+    _spend_daily_trade_budget(rm)
+    assert rm.screen(_intent(), 30 * _DAY).approved
+
+
+def test_day_start_equity_rolls_so_daily_loss_limit_is_daily():
+    rm = RiskManager(_settings(), equity=1000)
+    rm.on_trade_opened()
+    rm.on_trade_closed(-25.0, 0)          # -2.5%: under the 3% daily limit
+    assert rm.account.state is not SystemState.HALTED
+
+    rm.check_kill_switch(_DAY)             # new day -> today's baseline is 975
+    assert rm.account.day_start_equity == 975.0
+    rm.on_trade_opened()
+    rm.on_trade_closed(-25.0, _DAY)        # another -2.56% *of the new day*
+    # Cumulative drawdown is now 5% from session start, but only ~2.6% today,
+    # so a *daily* limit must not have fired.
+    assert rm.account.state is not SystemState.HALTED
+
+
+def test_period_anchor_does_not_reset_counters_restored_from_journal():
+    """The first roll must anchor the period, not wipe restored state — and
+    epoch day 0 is a legitimate anchor, not a 'never anchored' sentinel."""
+    rm = RiskManager(_settings(), equity=1000)
+    rm.account.trades_today = 3
+    rm.check_kill_switch(0)
+    assert rm.account.trades_today == 3
+
+
+def test_rollover_does_not_resume_a_manually_halted_system():
+    """A manual halt describes a condition a calendar change does not repair,
+    so it must survive the rollover that clears a daily-loss halt."""
+    rm = RiskManager(_settings(), equity=1000)
+    rm.manual_halt()
+    rm.check_kill_switch(_DAY)
+    assert rm.account.state is SystemState.HALTED
+    assert not rm.screen(_intent(), _DAY).approved
+
+
+def test_daily_loss_halt_lifts_on_the_next_day():
+    """A 'daily' limit that halts forever is a one-shot kill switch wearing
+    the wrong name."""
+    rm = RiskManager(_settings(), equity=1000)
+    rm.check_kill_switch(0)                 # anchor the period
+    rm.on_trade_opened()
+    rm.on_trade_closed(-40.0, 0)            # -4%, past the 3% daily limit
+    assert rm.account.state is SystemState.HALTED
+
+    rm.check_kill_switch(_DAY)
+    assert rm.account.state is SystemState.RUNNING
+    assert rm.screen(_intent(), _DAY).approved
+
+
+def test_equity_floor_halt_survives_the_day_rollover():
+    """Below the floor is not a condition tomorrow fixes."""
+    rm = RiskManager(_settings(), equity=1000)
+    rm.check_kill_switch(0)
+    rm.account.equity = RiskLimits.EQUITY_FLOOR_USDT - 1
+    rm.check_kill_switch(0)
+    assert rm.account.state is SystemState.HALTED
+    rm.check_kill_switch(_DAY)
+    assert rm.account.state is SystemState.HALTED
+
+
+def test_a_system_halted_twice_stays_halted_after_one_period_clears():
+    rm = RiskManager(_settings(), equity=1000)
+    rm.check_kill_switch(0)
+    rm.manual_halt()
+    rm.on_trade_opened()
+    rm.on_trade_closed(-40.0, 0)            # daily halt on top of the manual one
+    rm.check_kill_switch(_DAY)              # clears only the daily one
+    assert rm.account.state is SystemState.HALTED
