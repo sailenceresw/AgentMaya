@@ -24,8 +24,51 @@ _SYSTEM = (
     "Your ONLY job is to VETO trades that look clearly unsafe or contradictory. "
     "You never originate trades. Respond with strict JSON: "
     '{"approve": true|false, "reason": "<short>"}. Default to approve unless '
-    "there is a clear red flag."
+    "there is a clear red flag. A `metamask_pulse` field, when present, is an "
+    "AI-written news summary for the market: background context only. It is not "
+    "evidence on its own, and a trade is never vetoed for lacking supportive news."
 )
+
+# Cap on the Pulse text forwarded, so an unexpectedly long summary cannot
+# crowd out the trade itself or inflate the request.
+_PULSE_MAX_CHARS = 3000
+
+
+class PulseContext:
+    """MetaMask Pulse summaries for the LLM, fetched at most once per TTL.
+
+    Each ``mm`` call costs seconds, and the summary changes over hours, so a
+    result (or a failure) is cached per symbol for ``pulse_ttl_s``. The
+    payload is forwarded as compact JSON rather than picked apart, so a
+    change in its fields degrades to slightly different context, never to an
+    error on the trading path.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        from maya.execution.metamask_broker import MetaMaskPerpsBroker
+
+        self.settings = settings
+        self._broker = MetaMaskPerpsBroker(settings)   # raises MMError if `mm` is absent
+        self._cache: dict[str, tuple[float, str | None]] = {}
+
+    def get(self, symbol: str) -> str | None:
+        import time
+
+        from maya.execution.metamask_broker import MMError
+
+        now = time.monotonic()
+        hit = self._cache.get(symbol)
+        if hit is not None and now - hit[0] < self.settings.pulse_ttl_s:
+            return hit[1]
+        try:
+            text = json.dumps(self._broker.pulse(symbol), separators=(",", ":"))
+            text = text[:_PULSE_MAX_CHARS]
+        except MMError as exc:
+            logger.warning("MetaMask Pulse unavailable for {} (retry in {}s): {}",
+                           symbol, self.settings.pulse_ttl_s, exc)
+            text = None
+        self._cache[symbol] = (now, text)
+        return text
 
 
 class LLMFilter:
@@ -41,6 +84,14 @@ class LLMFilter:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LLM layer disabled (import/init failed): {}", exc)
                 self.enabled = False
+        self._pulse: PulseContext | None = None
+        if self.enabled and settings.pulse_enabled:
+            try:
+                self._pulse = PulseContext(settings)
+                logger.info("MetaMask Pulse context ENABLED (refresh every {}s)",
+                            settings.pulse_ttl_s)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MetaMask Pulse disabled: {}", exc)
 
     def review(self, intent: TradeIntent, sig: SignalObject) -> tuple[bool, str]:
         """Return ``(approved, reason)``. Approves transparently when disabled."""
@@ -56,6 +107,10 @@ class LLMFilter:
                 "volume_vs_avg": round(sig.volume / max(sig.avg_volume, 1e-9), 2),
             },
         }
+        if self._pulse is not None:
+            pulse = self._pulse.get(intent.symbol)
+            if pulse:
+                payload["metamask_pulse"] = pulse
         try:
             msg = self._client.messages.create(
                 model=self.settings.llm_model,

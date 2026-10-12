@@ -15,8 +15,10 @@ from maya.config import RiskLimits, Settings
 from maya.risk.sizing import (
     calculate_margin_notional,
     calculate_position_notional,
+    liquidation_distance_frac,
     margin_required,
     notional_to_qty,
+    stop_distance_frac,
 )
 from maya.strategy.models import TradeIntent
 
@@ -225,6 +227,18 @@ class RiskManager:
                 f"x {leverage}x) < {self.settings.min_roi_pct:.1f}%")
         if intent.expected_rr < RiskLimits.MIN_RR_FOR_ENTRY:
             return RiskDecision(False, f"R:R {intent.expected_rr:.1f} < {RiskLimits.MIN_RR_FOR_ENTRY}")
+
+        # A stop beyond the liquidation price never fires: the venue closes
+        # the position first and keeps the whole margin. Sizing caps the loss
+        # *at the stop*, so this is the one way a trade can lose more than
+        # the risk budget says it can.
+        stop_frac = stop_distance_frac(intent.entry_price, intent.stop_loss)
+        liq_frac = liquidation_distance_frac(leverage, RiskLimits.ASSUMED_MAINTENANCE_MARGIN)
+        if stop_frac >= liq_frac * RiskLimits.LIQUIDATION_BUFFER:
+            return RiskDecision(
+                False,
+                f"stop {stop_frac:.2%} away is beyond {RiskLimits.LIQUIDATION_BUFFER:.0%} of "
+                f"the ~{liq_frac:.2%} liquidation distance at {leverage}x")
 
         if self.settings.sizing_mode == "margin":
             notional = calculate_margin_notional(

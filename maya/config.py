@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -118,8 +118,31 @@ class Settings(BaseSettings):
     # Hyperliquid overstates costs by ~3.3x on every trade.
     fee_rate: float | None = None
     # Each `mm` call spawns Node and may wait on wallet signing/MFA, so this
-    # is generous compared to a REST timeout.
+    # is generous compared to a REST timeout. It must exceed
+    # ``mm_wallet_timeout_s`` (validated below) so the CLI gives up on a
+    # stalled signing job — and reports why — before Maya kills the process
+    # and is left not knowing whether the order went in.
     mm_timeout_s: int = 120
+    # Passed as `--wallet-timeout` on every signing command (open, close,
+    # modify, cancel): how long the CLI waits on a wallet job such as a Guard
+    # Mode MFA approval. The CLI caps this at 600.
+    mm_wallet_timeout_s: int = 90
+    # The CLI sends Segment analytics and Sentry reports from every call. With
+    # them on, a call whose analytics endpoint is slow or unreachable was
+    # measured hanging for 100s *after* printing its result; with them off the
+    # same call returned in 1.7s. Off by default (sets MM_TELEMETRY_DISABLED=1
+    # for the `mm` subprocess only); set true to share usage data with MetaMask.
+    mm_telemetry: bool = False
+    # A limit entry can come back "resting" instead of "filled". Maya then
+    # polls for the fill this long before cancelling the order, so an unfilled
+    # entry is never left on the book without a stop. 0 cancels immediately.
+    perps_limit_fill_timeout_s: float = 15.0
+    perps_fill_poll_s: float = 3.0
+    # MetaMask Pulse (`mm pulse asset --hl-perps-market <coin>`): an
+    # AI-written market summary handed to the LLM veto as extra context. Only
+    # read when the LLM layer is enabled; needs an authenticated `mm` session.
+    pulse_enabled: bool = False
+    pulse_ttl_s: int = 900
 
     # LLM veto layer
     llm_enabled: bool = False
@@ -159,6 +182,22 @@ class Settings(BaseSettings):
                 f"(RiskLimits.MAX_LEVERAGE)"
             )
         return v
+
+    @field_validator("mm_wallet_timeout_s")
+    @classmethod
+    def _wallet_timeout_within_cli_cap(cls, v: int) -> int:
+        if v < 1 or v > 600:
+            raise ValueError(f"mm_wallet_timeout_s={v} outside 1..600 (the CLI's cap)")
+        return v
+
+    @model_validator(mode="after")
+    def _process_outlives_wallet_job(self) -> "Settings":
+        if self.mm_timeout_s <= self.mm_wallet_timeout_s:
+            raise ValueError(
+                f"mm_timeout_s={self.mm_timeout_s} must exceed mm_wallet_timeout_s="
+                f"{self.mm_wallet_timeout_s}: otherwise Maya kills `mm` mid-signing "
+                "and cannot tell whether the order was submitted")
+        return self
 
     @field_validator("sizing_mode")
     @classmethod
@@ -244,6 +283,14 @@ class RiskLimits:
     DAILY_LOSS_LIMIT_PCT = 3.0
     WEEKLY_LOSS_LIMIT_PCT = 8.0
     MAX_LEVERAGE = 20
+    # Maintenance margin assumed when estimating where a position liquidates.
+    # Hyperliquid BTC is 1.25% (half the initial margin at its 40x max);
+    # Binance BTC tier 1 is 0.4%. The larger figure is used for both venues
+    # so the estimate errs towards liquidating *sooner*.
+    ASSUMED_MAINTENANCE_MARGIN = 0.0125
+    # The stop must sit inside this fraction of the distance to liquidation,
+    # leaving room for slippage on the stop fill and accrued funding.
+    LIQUIDATION_BUFFER = 0.8
     DEFAULT_LEVERAGE = 5
     POSITION_NOTIONAL_CAP_MULT = 5.0     # x equity
     MIN_RR_FOR_ENTRY = 4.0

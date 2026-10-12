@@ -1,4 +1,6 @@
 """Tests for the risk layer — the most safety-critical code (spec section 7)."""
+import pytest
+
 from maya.check_connection import (
     _extract_balance,
     _extract_orders,
@@ -29,9 +31,11 @@ def test_position_sizing_uses_fixed_usd_risk():
     assert abs(notional - 400) < 1e-6
 
 
-def _intent(rr=5.0, take_profit_1=120):
+def _intent(rr=5.0, take_profit_1=120, stop_loss=99):
+    # A 1% stop. Anything much wider is unreachable at 20x: the position
+    # liquidates first (see test_rejects_stop_beyond_liquidation).
     return TradeIntent("BTCUSDT", "long", "value_area_absorption",
-                       entry_price=100, stop_loss=95, take_profit_1=take_profit_1,
+                       entry_price=100, stop_loss=stop_loss, take_profit_1=take_profit_1,
                        take_profit_2=125, confluence_score=8, expected_rr=rr)
 
 
@@ -101,10 +105,9 @@ def test_risk_sizing_mode_still_available():
                               sizing_mode="risk", risk_per_trade_usd=20.0,
                               min_roi_pct=40.0), 1000)
     decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
-    # 5% stop, $20 risk -> $400 notional; same here by coincidence of numbers,
-    # but derived from risk rather than margin.
+    # 1% stop, $20 risk -> $2000 notional: derived from the stop, not margin.
     assert decision.approved
-    assert abs(decision.position_notional - 400.0) < 1e-6
+    assert abs(decision.position_notional - 2000.0) < 1e-6
 
 
 def test_leverage_above_hard_limit_is_rejected_not_clamped():
@@ -298,3 +301,28 @@ def test_a_system_halted_twice_stays_halted_after_one_period_clears():
     rm.on_trade_closed(-40.0, 0)            # daily halt on top of the manual one
     rm.check_kill_switch(_DAY)              # clears only the daily one
     assert rm.account.state is SystemState.HALTED
+
+
+def test_rejects_stop_beyond_liquidation():
+    """At 20x an isolated position liquidates after roughly a 3.75% adverse
+    move (5% initial margin less 1.25% maintenance). A 5% stop would never
+    fire — the venue would liquidate first and keep the whole margin."""
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=10.0, leverage=20), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=125, stop_loss=95), now_ts=0)
+    assert not decision.approved
+    assert "liquidation" in decision.reason
+
+
+def test_same_wide_stop_is_fine_at_lower_leverage():
+    # At 5x liquidation is ~18.75% away, so a 5% stop is well inside it.
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
+                              min_roi_pct=10.0, leverage=5), 1000)
+    assert rm.screen(_intent(rr=5.0, take_profit_1=125, stop_loss=95), now_ts=0).approved
+
+
+def test_liquidation_distance_estimate():
+    from maya.risk.sizing import liquidation_distance_frac
+
+    assert liquidation_distance_frac(20, 0.0125) == pytest.approx(0.0375)
+    assert liquidation_distance_frac(1, 0.0125) == pytest.approx(0.9875)

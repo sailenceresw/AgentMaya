@@ -11,8 +11,10 @@ Run directly:
 
 What it proves before any order is placed:
 
-1. the ``mm`` CLI is installed and on PATH,
-2. the CLI session is authenticated (``mm auth status``),
+1. the ``mm`` CLI is installed and on PATH, and is a version this broker was
+   verified against (``mm doctor``),
+2. the CLI session is authenticated and initialised with a wallet
+   (``mm doctor``; ``mm auth status`` on CLIs that predate it),
 3. the Hyperliquid sub-account has collateral — it is empty on first use and
    orders are rejected until ``mm perps deposit`` has been run,
 4. the venue shows no position/order that Maya has no local record of
@@ -40,6 +42,17 @@ from maya.execution.metamask_broker import (
     to_hl_symbol,
 )
 
+# The CLI major version this module's command surface and output parsing
+# were verified against (v7.1.0).
+MIN_CLI_MAJOR = 7
+
+
+def _major(version: str) -> int | None:
+    try:
+        return int(version.lstrip("v").split(".", 1)[0])
+    except ValueError:
+        return None
+
 
 def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
     """Collect every safe check into a report. Never raises for ordinary
@@ -66,20 +79,64 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
     logger.info("Targeting Hyperliquid {} via MetaMask Agent Wallet",
                 broker.network.upper())
 
-    # 2. Authentication. Everything downstream is signed, so a failure here
-    #    makes the rest meaningless — bail immediately.
+    # 2. CLI health. `mm doctor` needs no session and reports the CLI
+    #    version plus whether it is signed in *and* initialised with a wallet
+    #    — MetaMask's docs say to confirm both before any wallet operation.
+    #    Older CLIs without it fall back to `mm auth status`.
     try:
-        auth = broker.auth_status()
+        doctor = broker.doctor()
     except MMError as exc:
-        report.errors.append(f"`mm auth status` failed: {exc}")
-        report.ok = False
-        return report
+        logger.debug("`mm doctor` unavailable ({}); falling back to `mm auth status`", exc)
+        doctor = None
 
-    if not bool(pick(auth, "authenticated", "isAuthenticated", default=False)):
-        reason = pick(auth, "reason", "message", default="not signed in")
-        report.errors.append(f"MetaMask Agent Wallet is not authenticated ({reason}) — run `mm login`")
-        report.ok = False
-        return report
+    if doctor is not None:
+        version = str(doctor.get("cli", "?"))
+        logger.info("MetaMask Agent Wallet CLI v{}", version)
+        if _major(version) is not None and _major(version) < MIN_CLI_MAJOR:
+            report.warnings.append(
+                f"mm CLI v{version} is older than v{MIN_CLI_MAJOR}, which this broker was "
+                "verified against — upgrade with `npm install -g @metamask/agent-wallet@latest`")
+        if not doctor.get("authenticated"):
+            report.errors.append("MetaMask Agent Wallet is not authenticated — run `mm login`")
+            report.ok = False
+            return report
+        if doctor.get("initialized") is False:
+            report.errors.append(
+                "MetaMask Agent Wallet is signed in but not initialised — run "
+                "`mm init --wallet server-wallet --mode guard`")
+            report.ok = False
+            return report
+    else:
+        # Everything downstream is signed, so a failure here makes the rest
+        # meaningless — bail immediately.
+        try:
+            auth = broker.auth_status()
+        except MMError as exc:
+            report.errors.append(f"`mm auth status` failed: {exc}")
+            report.ok = False
+            return report
+
+        if not bool(pick(auth, "authenticated", "isAuthenticated", default=False)):
+            reason = pick(auth, "reason", "message", default="not signed in")
+            report.errors.append(
+                f"MetaMask Agent Wallet is not authenticated ({reason}) — run `mm login`")
+            report.ok = False
+            return report
+
+    # Trading mode, informational. Guard Mode can pause a deposit or
+    # withdrawal for phone approval; Beast Mode never does. Order placement
+    # itself happens on Hyperliquid and is not gated by either.
+    try:
+        mode = broker.trading_mode()
+        if mode:
+            logger.info("Wallet trading mode : {}", mode)
+            if mode.lower() == "beast" and broker.network == "mainnet":
+                report.warnings.append(
+                    "wallet is in Beast Mode on mainnet: outflows skip the Guard Mode "
+                    "approval and 24h limit. Run `mm wallet trading-mode set guard` "
+                    "unless that is deliberate.")
+    except MMError as exc:
+        logger.debug("could not read wallet trading mode: {}", exc)
 
     # 3. Collateral. A zero balance is the single most common reason a first
     #    Hyperliquid order is rejected, so it is called out explicitly.

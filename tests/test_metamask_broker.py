@@ -36,7 +36,9 @@ from maya.strategy.models import TradeIntent
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(mode=RunMode.TESTNET, venue=Venue.HYPERLIQUID, symbol="BTCUSDT")
+    # No real waiting: a resting entry is checked once, then cancelled.
+    return Settings(mode=RunMode.TESTNET, venue=Venue.HYPERLIQUID, symbol="BTCUSDT",
+                    perps_limit_fill_timeout_s=0, perps_fill_poll_s=0)
 
 
 @pytest.fixture
@@ -56,6 +58,25 @@ def position() -> Position:
         quantity=0.034, notional=2271.2, leverage=5, opened_ts=0,
         confluence_score=7, rr_planned=5.2,
     )
+
+
+# `mm perps open` results in the v7 shape. Unlike the REAL_* fixtures below
+# these were NOT captured from a live session: they are built from the
+# result mapping in the CLI's own v7.1.0 source (filled -> orderId, status,
+# averagePrice, filledSize; resting -> orderId, status; error -> status
+# "rejected", error). Statuses are "filled" | "resting" | "submitted" |
+# "rejected".
+V7_OPEN_FILLED = {"venue": "hyperliquid", "symbol": "BTC", "orderId": "1",
+                  "status": "filled", "averagePrice": "66795.5", "filledSize": "0.034"}
+V7_OPEN_RESTING = {"venue": "hyperliquid", "symbol": "BTC", "orderId": "77",
+                   "status": "resting"}
+V7_OPEN_REJECTED = {"venue": "hyperliquid", "symbol": "BTC", "status": "rejected",
+                    "error": "Order could not immediately match against any resting orders."}
+# v7 position rows: absolute size plus side, entryPrice, liquidationPrice.
+V7_POSITION_SHORT = {"venue": "hyperliquid", "symbol": "BTC", "side": "short",
+                     "size": "0.034", "entryPrice": "66800.0", "positionValue": "2271.2",
+                     "unrealizedPnl": "0", "marginUsed": "454.24", "leverage": 5,
+                     "liquidationPrice": "79500.0"}
 
 
 class FakeMM:
@@ -127,7 +148,7 @@ def test_size_rounds_down_never_up():
 
 # -- open ------------------------------------------------------------------ #
 def test_open_places_limit_entry_then_attaches_sl_tp(broker, intent, monkeypatch):
-    fake = FakeMM({"ok": True, "data": {"orderId": 1}}, {"ok": True, "data": {}})
+    fake = FakeMM({"ok": True, "data": V7_OPEN_FILLED}, {"ok": True, "data": {}})
     install(monkeypatch, fake)
 
     assert broker.open_position(intent, 0.034, 5) is True
@@ -163,7 +184,7 @@ def test_open_unwinds_position_when_sl_tp_attach_fails(broker, intent, monkeypat
     failed follow-up `modify` leaves a live position with no stop. It must be
     closed immediately rather than left on the book."""
     fake = FakeMM(
-        {"ok": True, "data": {"orderId": 1}},          # open succeeds
+        {"ok": True, "data": V7_OPEN_FILLED},          # open succeeds
         {"ok": False, "error": "trigger price invalid"},  # SL/TP attach fails
         {"ok": True, "data": {}},                       # emergency close
     )
@@ -180,7 +201,7 @@ def test_open_survives_failed_unwind_without_raising(broker, intent, monkeypatch
     venue. That must be logged as critical, not raised into the graph — the
     engine still needs a clean False so it doesn't record a local position."""
     fake = FakeMM(
-        {"ok": True, "data": {"orderId": 1}},
+        {"ok": True, "data": V7_OPEN_FILLED},
         {"ok": False, "error": "trigger price invalid"},
         {"ok": False, "error": "close failed"},
     )
@@ -393,3 +414,258 @@ def test_live_mode_targets_mainnet(monkeypatch):
         "maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
     broker = MetaMaskPerpsBroker(Settings(mode=RunMode.LIVE, venue=Venue.HYPERLIQUID))
     assert broker.network == "mainnet"
+
+
+# --------------------------------------------------------------------------- #
+# CLI v7 behaviour: order status, resting entries, output forms, telemetry
+# --------------------------------------------------------------------------- #
+def test_filled_entry_records_the_venue_fill_not_the_plan(broker, intent, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": True, "data": V7_OPEN_FILLED}, {"ok": True, "data": {}}))
+    assert broker.open_position(intent, 0.034, 5) is True
+    assert broker.last_fill.price == pytest.approx(66795.5)
+    assert broker.last_fill.size == pytest.approx(0.034)
+
+
+def test_venue_rejected_entry_never_attaches_sl_tp(broker, intent, monkeypatch):
+    """`ok: true` with status "rejected" is a failed order, not a success."""
+    fake = FakeMM({"ok": True, "data": V7_OPEN_REJECTED})
+    install(monkeypatch, fake)
+    assert broker.open_position(intent, 0.034, 5) is False
+    assert len(fake.calls) == 1
+    assert broker.last_fill is None
+
+
+def test_unfilled_resting_entry_is_cancelled_not_left_naked(broker, intent, monkeypatch):
+    """The bug this guards: a resting limit has no position yet, so the SL/TP
+    `modify` failed, the unwind `close` found nothing, and the limit order was
+    left on the book with no stop — to fill later as a naked position."""
+    fake = FakeMM(
+        {"ok": True, "data": V7_OPEN_RESTING},
+        {"ok": True, "data": []},          # not filled within the wait
+        {"ok": True, "data": {}},          # cancel
+        {"ok": True, "data": []},          # still flat after the cancel
+    )
+    install(monkeypatch, fake)
+
+    assert broker.open_position(intent, 0.034, 5) is False
+    cancel = fake.command(2)
+    assert "perps cancel" in cancel and "--order-id 77" in cancel and "--symbol BTC" in cancel
+    assert not any("perps modify" in fake.command(i) for i in range(len(fake.calls)))
+
+
+def test_resting_entry_that_fills_gets_protected(broker, intent, monkeypatch):
+    fake = FakeMM(
+        {"ok": True, "data": V7_OPEN_RESTING},
+        {"ok": True, "data": [V7_POSITION_SHORT]},   # filled while waiting
+        {"ok": True, "data": {}},                    # SL/TP attach
+    )
+    install(monkeypatch, fake)
+
+    assert broker.open_position(intent, 0.034, 5) is True
+    assert "perps modify" in fake.command(2) and "--sl 67388" in fake.command(2)
+    assert broker.last_fill.price == pytest.approx(66800.0)
+
+
+def test_partial_fill_is_cancelled_then_protected_at_its_real_size(broker, intent, monkeypatch):
+    partial = dict(V7_POSITION_SHORT, size="0.01")
+    fake = FakeMM(
+        {"ok": True, "data": V7_OPEN_RESTING},
+        {"ok": True, "data": [partial]},     # part-filled at the deadline
+        {"ok": True, "data": {}},            # cancel the remainder
+        {"ok": True, "data": [partial]},     # what is actually open
+        {"ok": True, "data": {}},            # SL/TP attach
+    )
+    install(monkeypatch, fake)
+
+    assert broker.open_position(intent, 0.034, 5) is True
+    assert "perps cancel" in fake.command(2)
+    assert "perps modify" in fake.command(4)
+    assert broker.last_fill.size == pytest.approx(0.01)
+
+
+def test_failed_cancel_of_resting_entry_reports_failure(broker, intent, monkeypatch):
+    fake = FakeMM(
+        {"ok": True, "data": V7_OPEN_RESTING},
+        {"ok": True, "data": []},
+        {"ok": False, "error": {"code": "ORDER_NOT_FOUND", "message": "no such order"}},
+        {"ok": True, "data": []},
+    )
+    install(monkeypatch, fake)
+    assert broker.open_position(intent, 0.034, 5) is False
+
+
+def test_resting_entry_without_order_id_cancels_only_its_own_order(broker, intent, monkeypatch):
+    submitted = {"venue": "hyperliquid", "symbol": "BTC", "status": "submitted"}
+    fake = FakeMM(
+        {"ok": True, "data": submitted},
+        {"ok": True, "data": []},
+        {"ok": True, "data": [   # `perps orders`
+            {"orderId": "5", "symbol": "ETH", "side": "short", "limitPrice": "66800"},
+            {"orderId": "6", "symbol": "BTC", "side": "short", "limitPrice": "70000"},
+            {"orderId": "7", "symbol": "BTC", "side": "short", "limitPrice": "66800"},
+        ]},
+        {"ok": True, "data": {}},
+        {"ok": True, "data": []},
+    )
+    install(monkeypatch, fake)
+
+    assert broker.open_position(intent, 0.034, 5) is False
+    cancels = [fake.command(i) for i in range(len(fake.calls)) if "perps cancel" in fake.command(i)]
+    assert len(cancels) == 1 and "--order-id 7" in cancels[0]
+
+
+def test_signing_commands_carry_the_wallet_timeout(broker, intent, position, monkeypatch):
+    fake = FakeMM({"ok": True, "data": V7_OPEN_FILLED}, {"ok": True, "data": {}},
+                  {"ok": True, "data": {}}, {"ok": True, "data": []})
+    install(monkeypatch, fake)
+    broker.open_position(intent, 0.034, 5)
+    broker.close_position(position, 63700.0, "take_profit")
+    broker.perps("positions")
+
+    for i in range(3):   # open, modify, close
+        assert "--wallet-timeout 90" in fake.command(i)
+    assert "--wallet-timeout" not in fake.command(3)   # reads never sign
+
+
+def test_error_envelope_on_stderr_keeps_code_and_hint(broker, monkeypatch):
+    """Captured from CLI v7.1.0: failures print the envelope to STDERR and
+    leave stdout empty."""
+    stderr = json.dumps({"ok": False, "error": {
+        "code": "AUTH_FAILED",
+        "message": "No CLI refresh token available — run `mm login` to sign in.",
+        "hint": "Run `mm login` to sign in."}}, indent=2)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, "", stderr))
+    with pytest.raises(MMError, match="AUTH_FAILED") as err:
+        broker.perps("balance")
+    assert err.value.code == "AUTH_FAILED"
+
+
+def test_stream_output_with_mfa_notice_returns_the_summary(broker, monkeypatch):
+    """Once a command emits a notice (e.g. a Guard Mode approval wait) the CLI
+    switches to one JSON object per line. Parsing stdout as one document
+    used to turn a successful order into a 'non-JSON output' error."""
+    stdout = "\n".join([
+        json.dumps({"_notice": {"kind": "AWAITING_MFA", "pollingId": "p-1",
+                                "message": "Approve in MetaMask"}}),
+        json.dumps({"_summary": V7_OPEN_FILLED}),
+    ])
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, stdout, ""))
+    assert broker.perps("open")["status"] == "filled"
+
+
+def test_stream_error_on_stderr_is_a_failure(broker, monkeypatch):
+    stdout = json.dumps({"_notice": {"kind": "AWAITING_MFA", "pollingId": "p-1"}})
+    stderr = json.dumps({"_error": {"code": "MFA_TIMEOUT", "message": "approval expired"}})
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout, stderr))
+    with pytest.raises(MMError, match="MFA_TIMEOUT"):
+        broker.perps("open")
+
+
+def test_timeout_after_printing_a_result_uses_the_result(broker, monkeypatch):
+    """Observed with v7.1.0: the CLI prints its result, then hangs flushing
+    analytics until killed. The printed result is conclusive."""
+    def hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd, 120, output=json.dumps({"ok": True, "data": [V7_POSITION_SHORT]}), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    assert broker.fetch_position("BTCUSDT")["symbol"] == "BTC"
+
+
+def test_timeout_with_partial_bytes_output_is_still_unknown(broker, monkeypatch):
+    def hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 120, output=b'{"_notice": {"kind": "AWAITING_MFA"}}')
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(MMError, match="UNKNOWN"):
+        broker.perps("open")
+
+
+def test_telemetry_is_disabled_for_the_subprocess_by_default(broker, monkeypatch):
+    seen = {}
+
+    def record(cmd, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"ok": True, "data": []}), "")
+
+    monkeypatch.setattr(subprocess, "run", record)
+    broker.perps("positions")
+    assert seen.get("MM_TELEMETRY_DISABLED") == "1"
+
+
+def test_telemetry_can_be_opted_into(settings, monkeypatch):
+    monkeypatch.setattr("maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
+    monkeypatch.delenv("MM_TELEMETRY_DISABLED", raising=False)
+    broker = MetaMaskPerpsBroker(settings.model_copy(update={"mm_telemetry": True}))
+    assert "MM_TELEMETRY_DISABLED" not in broker._env
+
+
+def test_process_timeout_must_outlast_the_wallet_timeout():
+    with pytest.raises(ValueError, match="must exceed"):
+        Settings(mm_timeout_s=60, mm_wallet_timeout_s=90)
+    with pytest.raises(ValueError, match="1..600"):
+        Settings(mm_timeout_s=900, mm_wallet_timeout_s=700)
+
+
+# -- preflight (maya.check_metamask) ---------------------------------------- #
+# `mm doctor` captured verbatim from CLI v7.1.0 (signed out), trimmed.
+REAL_DOCTOR_SIGNED_OUT = {
+    "cli": "7.1.0", "env": "prod", "authenticated": False, "initialized": False,
+    "hints": ["Not authenticated for env prod. Run `mm login`."],
+}
+
+
+def _diagnose(settings, monkeypatch, *responses):
+    from maya.check_metamask import run_diagnostics
+
+    monkeypatch.setattr("maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
+    fake = FakeMM(*responses)
+    install(monkeypatch, fake)
+    return run_diagnostics(settings), fake
+
+
+def test_preflight_fails_fast_when_signed_out(settings, monkeypatch):
+    report, fake = _diagnose(settings, monkeypatch,
+                             {"ok": True, "data": REAL_DOCTOR_SIGNED_OUT})
+    assert not report.ok
+    assert any("mm login" in e for e in report.errors)
+    assert len(fake.calls) == 1   # nothing else attempted
+
+
+def test_preflight_requires_an_initialised_wallet(settings, monkeypatch):
+    doctor = dict(REAL_DOCTOR_SIGNED_OUT, authenticated=True, initialized=False)
+    report, _ = _diagnose(settings, monkeypatch, {"ok": True, "data": doctor})
+    assert not report.ok
+    assert any("mm init" in e for e in report.errors)
+
+
+def test_preflight_healthy_path_warns_on_old_cli_and_beast_mode(monkeypatch):
+    live = Settings(mode=RunMode.LIVE, venue=Venue.HYPERLIQUID, symbol="BTCUSDT")
+    doctor = dict(REAL_DOCTOR_SIGNED_OUT, cli="6.0.0", authenticated=True, initialized=True)
+    funded = dict(REAL_BALANCE, totalBalance="500.0")
+    report, _ = _diagnose(
+        live, monkeypatch,
+        {"ok": True, "data": doctor},
+        {"ok": True, "data": {"mode": "beast", "address": "0xabc"}},
+        {"ok": True, "data": funded},
+        {"ok": True, "data": [REAL_MARKET_BTC]},
+        {"ok": True, "data": REAL_POSITIONS_EMPTY},
+        {"ok": True, "data": REAL_ORDERS_EMPTY},
+    )
+    assert report.ok
+    assert report.usdt_balance == pytest.approx(500.0)
+    assert any("older than v7" in w for w in report.warnings)
+    assert any("Beast Mode" in w for w in report.warnings)
+
+
+def test_preflight_falls_back_to_auth_status_on_cli_without_doctor(settings, monkeypatch):
+    report, fake = _diagnose(
+        settings, monkeypatch,
+        {"ok": False, "error": {"code": "UNKNOWN_COMMAND", "message": "doctor"}},
+        {"ok": True, "data": {"authenticated": False}},
+    )
+    assert not report.ok
+    assert "auth status" in fake.command(1)

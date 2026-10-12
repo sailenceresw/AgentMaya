@@ -60,11 +60,19 @@ class ExecutionEngine:
             ok = self.broker.open_position(intent, decision.quantity, decision.leverage)
             if not ok:
                 return False
+            # A broker that can read the venue's fill (MetaMask/Hyperliquid)
+            # reports it, so PnL, R and fees are computed from the price and
+            # size actually traded — a market entry's slippage or a partially
+            # filled limit would otherwise be invisible in the journal.
+            entry, qty, notional = intent.entry_price, decision.quantity, decision.position_notional
+            fill = getattr(self.broker, "last_fill", None)
+            if fill is not None and fill.price > 0 and fill.size > 0:
+                entry, qty, notional = fill.price, fill.size, fill.price * fill.size
             self.position = Position(
                 symbol=intent.symbol, direction=intent.direction,
-                setup_name=intent.setup_name, entry_price=intent.entry_price,
+                setup_name=intent.setup_name, entry_price=entry,
                 stop_loss=intent.stop_loss, take_profit=intent.take_profit_1,
-                quantity=decision.quantity, notional=decision.position_notional,
+                quantity=qty, notional=notional,
                 leverage=decision.leverage, opened_ts=ts,
                 confluence_score=intent.confluence_score, rr_planned=intent.expected_rr,
                 confluences=list(intent.confluences),

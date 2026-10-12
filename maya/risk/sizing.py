@@ -73,3 +73,11 @@ def notional_to_qty(notional: float, price: float) -> float:
 
 def margin_required(notional: float, leverage: int) -> float:
     return notional / leverage if leverage else 0.0
+
+
+def liquidation_distance_frac(leverage: int, maintenance_margin: float) -> float:
+    """Approximate adverse move, as a fraction of entry, that liquidates an
+    isolated position: the initial margin (1/leverage) less the maintenance
+    margin the venue keeps back. Ignores fees and funding, which only bring
+    liquidation closer — callers apply a buffer for that."""
+    return max(1.0 / max(leverage, 1) - maintenance_margin, 0.0)

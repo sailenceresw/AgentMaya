@@ -92,7 +92,7 @@ choice.
 | `MAYA_VENUE` | Venue | Auth | Status |
 |---|---|---|---|
 | `binance` (default) | Binance USD-M perps via ccxt | API key/secret | The tested path |
-| `hyperliquid` | Hyperliquid perps via the MetaMask Agent Wallet `mm` CLI | Self-custodial wallet, no exchange keys | Unit-tested, **no venue hours yet** |
+| `hyperliquid` | Hyperliquid perps via the MetaMask Agent Wallet `mm` CLI (v7.1) | Self-custodial wallet, no exchange keys | Unit-tested against the v7.1 CLI, **no venue hours yet** |
 
 A MetaMask wallet cannot trade Binance and a Binance key cannot trade
 Hyperliquid — selecting `hyperliquid` moves execution to a different market,

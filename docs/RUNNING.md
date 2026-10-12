@@ -102,8 +102,9 @@ instead of a Binance API key. Understand the substitution first:
 ### Setup
 
 ```bash
-npm install -g @metamask/agent-wallet@latest   # provides the `mm` CLI
+npm install -g @metamask/agent-wallet@latest   # provides the `mm` CLI (v7.1+, Node 22.18+)
 npx skills add metamask/agent-skills           # agent-facing skill docs
+mm doctor                                      # CLI version + session health
 
 mm login                                       # browser / QR — interactive, do this yourself
 mm init --wallet server-wallet --mode guard    # server-held keys + Guard policy
@@ -172,7 +173,7 @@ automatically at startup and refuses to start if it fails.
 The command surface (`mm perps open/close/modify/positions/balance`, the
 `--json` envelope, `--network testnet`) was read from `mm --help --json`
 against CLI v6.0.0, and `tests/test_metamask_broker.py` pins the argv Maya
-builds and its failure handling (26 tests).
+builds and its failure handling (53 tests as of the v7.1 update).
 
 Every payload the broker parses has now been captured verbatim from a live
 authenticated testnet session and is pinned as a fixture in
@@ -215,13 +216,92 @@ are now venue-resolved (`Settings.effective_fee_rate`, overridable with
 `MAYA_FEE_RATE`). Funding is also charged **hourly** on Hyperliquid, not
 8-hourly as the simulator assumed.
 
+### CLI v7.1 update (October 2026)
+
+The broker was re-checked against `@metamask/agent-wallet` **v7.1.0**, by
+reading the per-command `mm <cmd> --help --json` output, the CLI's changelog,
+and its result-mapping code, and by running the CLI signed out. No perps
+command or flag Maya uses changed between v6.0.0 and v7.1.0. The re-check
+still found six problems in how Maya drove the CLI:
+
+1. **A resting limit entry was left on the book with no stop.** With the
+   default `MAYA_PERPS_ORDER_TYPE=limit`, an entry that does not cross the
+   book comes back `status: "resting"`, which means no position exists yet.
+   The follow-up `perps modify --sl --tp` then failed, the "unwind" `close`
+   found nothing to close, and the limit order **stayed live**. If it filled
+   later, it was a naked position Maya didn't know about. The broker now reads
+   `status` (`filled` / `resting` / `submitted` / `rejected`). For a
+   non-filled entry it polls positions for `MAYA_PERPS_LIMIT_FILL_TIMEOUT_S`,
+   then cancels by `orderId` (`mm perps cancel`, new in this integration), then
+   reads positions once more. A fill that landed during the cancel, whole or
+   partial, gets its SL/TP at its real size. If the cancel fails, a `CRITICAL`
+   log names the order id to cancel by hand.
+2. **`ok: true` with `status: "rejected"` was counted as a success.** The
+   venue can reject an order the wallet signed. Maya would then have tried to
+   attach SL/TP and recorded a phantom position. It now returns `False`.
+3. **Errors were read from the wrong stream.** Observed on v7.1.0: failures
+   print the `{"ok": false, "error": {"code", "message", "hint"}}` envelope to
+   **stderr** and leave stdout empty. Maya only parsed stdout, so every error
+   reached the log as "produced no output". `MMError` now carries the CLI's
+   `code` (`AUTH_FAILED`, `INSUFFICIENT_FUNDS`, ...) and its hint.
+4. **Stream output broke parsing.** Once a command emits anything mid-run,
+   for example a `{"_notice": {"kind": "AWAITING_MFA"}}` line while a Guard
+   Mode approval is pending, the CLI switches to one JSON object per line,
+   ending in `{"_summary": ...}` or `{"_error": ...}`. Maya parsed stdout as a
+   single document, so an order that **succeeded** after an approval was
+   reported as "non-JSON output". Both forms are now handled, and MFA
+   notices are logged with their polling id.
+5. **Telemetry made calls hang.** The CLI sends Segment/Sentry analytics
+   *after* printing its result. With analytics enabled and its endpoint
+   unreachable, `mm perps balance` printed its answer and then **hung for
+   over 100s** until killed. With `MM_TELEMETRY_DISABLED=1` the identical
+   call took **1.7s**. Maya now disables telemetry for the `mm` subprocess
+   (`MAYA_MM_TELEMETRY=true` re-enables it). Separately, a call that times
+   out *after* printing a conclusive result now uses that result instead of
+   reporting the order state as unknown.
+6. **No wallet-job timeout was passed.** Signing commands (open, close,
+   modify, cancel) now pass `--wallet-timeout` (`MAYA_MM_WALLET_TIMEOUT_S`,
+   default 90, CLI cap 600). The CLI therefore gives up on a stalled approval
+   and says so before Maya kills the process. Settings refuse a
+   `MAYA_MM_TIMEOUT_S` that is not longer than the wallet timeout.
+
+New uses of the CLI:
+
+- **Real fills in the journal.** The engine records the venue's
+  `averagePrice` and `filledSize` instead of the planned entry and size.
+  Market-order slippage and partial limit fills now show up in PnL and R.
+- **`mm doctor` preflight.** `check_metamask` runs it first. It needs no
+  session and reports the CLI version (warns below v7), `authenticated`, and
+  `initialized`. MetaMask's own docs say to confirm both before any wallet
+  operation. CLIs without `doctor` fall back to `mm auth status`.
+- **Trading mode.** `mm wallet trading-mode get` is logged at startup, and
+  running in Beast Mode on mainnet raises a warning.
+- **MetaMask Pulse (optional).** `MAYA_PULSE_ENABLED=true` passes
+  `mm pulse asset --hl-perps-market <coin>`, MetaMask's AI-written market
+  summary, to the LLM veto as background context. It is cached for
+  `MAYA_PULSE_TTL_S`, including failures, so the slow call stays off the
+  per-candle path. It is used only when `MAYA_LLM_ENABLED=true`. It is
+  context, not a signal: nothing here measures it as predictive.
+
+One addition is venue-agnostic: the risk manager now **rejects a trade whose
+stop sits beyond the estimated liquidation price**. Such a stop never fires,
+because the venue liquidates first and keeps the whole margin. That is the
+one way a trade could lose more than its sized risk. The estimate is
+`1/leverage − 1.25%` maintenance margin (Hyperliquid's BTC figure, the more
+conservative of the two venues), and the stop must sit within 80% of that
+distance. At the default 20x, stops wider than 3% are refused.
+
 What is **still** unverified, and cannot be until the sub-account holds funds:
 
-- **How an open position reports.** `perps positions` has only ever been
-  observed empty, so the field names on a *populated* entry are still inferred
-  (the parser tries `size`/`szi`/`sz`/`contracts`). This is the last real gap.
-- **A submitted order.** `--dry-run` validates and prepares; nothing has been
-  signed or filled.
+- **A signed, filled order.** `--dry-run` validates and prepares; nothing has
+  been signed or filled through Maya. The `filled`/`resting` result shapes and
+  the populated position row (`symbol`, `side`, absolute `size`,
+  `entryPrice`, `liquidationPrice`) now come from the v7.1.0 CLI source
+  rather than guesswork. They have still never been observed live. The test
+  fixtures built from them are labelled as such.
+- **`mm wallet trading-mode get` and `mm pulse`** were only seen returning
+  `AUTH_FAILED` (signed out). Their success shapes come from the source, and
+  both are informational only.
 
 Treat it as `RUNNING.md` treats the WebSocket feed: verified logic, minimal
 venue hours. Testnet first.
@@ -229,8 +309,9 @@ venue hours. Testnet first.
 ### Caveats that differ from the Binance path
 
 - **SL/TP is not atomic with entry.** `mm perps open` has no stop-loss or
-  take-profit flag; protection is attached by a second `mm perps modify`
-  call. Between the two the position is live and unprotected. The broker
+  take-profit flag (still true in v7.1); protection is attached by a second
+  `mm perps modify` call, and only once a position exists — a resting limit
+  entry is waited on, then cancelled if it has not filled. Between the two the position is live and unprotected. The broker
   treats a failed attach as fatal and immediately closes the position — but
   if *that* close also fails it logs `CRITICAL` and you have a naked
   position to handle by hand. This is strictly weaker than the Binance path,
@@ -258,6 +339,13 @@ venue hours. Testnet first.
   timeout leaves order state genuinely *unknown* and is logged as such; the
   broker also logs a warning for any call over 10s.
 
+  *Update (v7.1):* some of that latency was probably the CLI's analytics
+  flush rather than the work itself. With telemetry disabled (now Maya's
+  default) a signed-out call returned in 1.7s, against a 100s+ hang with it
+  on, in an environment where the analytics endpoint was unreachable.
+  Re-time `mm perps positions` on your own machine before deciding. The
+  structural points (two calls per entry, Guard Mode approvals) still stand.
+
   **This is the strongest argument against running Maya's 1m scalping
   strategy through this transport.** If you want Hyperliquid, the native
   Hyperliquid API with a locally-signing agent wallet gives sub-second
@@ -276,7 +364,13 @@ venue hours. Testnet first.
 | `MAYA_PERPS_ORDER_TYPE` | `limit` | `limit` enters at `intent.entry_price`, preserving planned R:R; `market` fills now and changes it |
 | `MAYA_PERPS_SIZE_DECIMALS` | `5` | Venue size precision (BTC = 5) |
 | `MAYA_PERPS_MAX_SLIPPAGE_BPS` | `50` | Slippage cap for market orders/closes |
-| `MAYA_MM_TIMEOUT_S` | `120` | Per-`mm`-call timeout |
+| `MAYA_MM_TIMEOUT_S` | `120` | Per-`mm`-call process timeout; must exceed the wallet timeout |
+| `MAYA_MM_WALLET_TIMEOUT_S` | `90` | `--wallet-timeout` on signing commands (CLI max 600) |
+| `MAYA_MM_TELEMETRY` | `false` | `true` lets the CLI send analytics (can add long hangs) |
+| `MAYA_PERPS_LIMIT_FILL_TIMEOUT_S` | `15` | How long a resting limit entry may wait for a fill before it is cancelled |
+| `MAYA_PERPS_FILL_POLL_S` | `3` | Position poll interval while waiting |
+| `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
+| `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |
 
 `MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
 requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.
