@@ -186,8 +186,25 @@ venue's own `estimatedLiquidationPrice` falls before the stop, the rehearsal
 refuses the entry and logs it.
 
 What a dry run cannot test is the part after submission: fills, resting
-orders, the SL/TP `modify`, and real closes. Those still need a first small
-funded mainnet trade, watched by hand.
+orders, the SL/TP `modify`, and real closes. Those need real trades. Use
+minimum-size mode for them.
+
+### Minimum-size mode (`MAYA_PERPS_MIN_SIZE=true`)
+
+Every Hyperliquid order is sized at the venue's **$10 minimum notional**
+(targeting $10.50, size rounded *up* to the market's precision so it never
+lands under $10) instead of `MAYA_SIZING_MODE`. The whole real lifecycle runs:
+signing, fill or resting entry, SL/TP attach, venue-side exits, and the
+monitor's reconciliation. The money at stake is tiny. On the scripted BTC
+setup that is 0.00016 BTC (about $10.69), where a stop-out costs about $0.06
+plus fees. At 20x it locks about $0.53 of margin.
+
+Every other risk check still applies: R:R, ROI on margin, the liquidation
+guard, daily limits. The suggested path from here is:
+
+1. `MAYA_PERPS_DRY_RUN=true`: the venue validates every order, nothing is signed.
+2. `MAYA_PERPS_MIN_SIZE=true` with a small deposit: real orders at $10.
+3. Normal sizing, only once the journal matches the Hyperliquid UI trade for trade.
 
 The live interlock (`MAYA_LIVE_CONFIRM`) is deliberately still required with
 `MAYA_MODE=live`. A dry run that loses its `MAYA_PERPS_DRY_RUN` line through
@@ -200,7 +217,7 @@ early-access email, Sep 2026):
 
 | MetaMask's tip | In Maya |
 |---|---|
-| Fund first; orders below **$10 notional are rejected** | The broker refuses sub-$10 orders before calling the CLI |
+| Fund first; orders below **$10 notional are rejected** | The broker refuses sub-$10 orders before calling the CLI; `MAYA_PERPS_MIN_SIZE=true` trades at exactly that floor |
 | Quote or dry-run before opening | `MAYA_PERPS_DRY_RUN=true` does both for every entry |
 | Say "limit" explicitly; no price means a market order | `MAYA_PERPS_ORDER_TYPE=limit` by default, always passed explicitly |
 | Cap slippage on **both** ends | `--max-slippage-bps` on market entries, normal closes, and the emergency close (the last was missing) |
@@ -418,6 +435,7 @@ venue hours. Testnet first.
 | `MAYA_PERPS_LIMIT_FILL_TIMEOUT_S` | `15` | How long a resting limit entry may wait for a fill before it is cancelled |
 | `MAYA_PERPS_FILL_POLL_S` | `3` | Position poll interval while waiting |
 | `MAYA_PERPS_DRY_RUN` | `false` | Rehearsal: validate and quote every order on the venue, never sign or submit |
+| `MAYA_PERPS_MIN_SIZE` | `false` | Size every order at Hyperliquid's $10 minimum (~$10.50) |
 | `MAYA_MM_EXPECTED_ADDRESS` | *(blank)* | Agent wallet Maya must trade from; any other refuses to start |
 | `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
 | `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |

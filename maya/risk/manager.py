@@ -11,7 +11,12 @@ from enum import Enum
 
 from loguru import logger
 
-from maya.config import RiskLimits, Settings
+from maya.config import (
+    HYPERLIQUID_MIN_NOTIONAL_USD,
+    MIN_SIZE_HEADROOM,
+    RiskLimits,
+    Settings,
+)
 from maya.risk.sizing import (
     calculate_margin_notional,
     calculate_position_notional,
@@ -240,7 +245,11 @@ class RiskManager:
                 f"stop {stop_frac:.2%} away is beyond {RiskLimits.LIQUIDATION_BUFFER:.0%} of "
                 f"the ~{liq_frac:.2%} liquidation distance at {leverage}x")
 
-        if self.settings.sizing_mode == "margin":
+        if self.settings.min_size_trading:
+            # Smallest order Hyperliquid accepts. The broker rounds the size
+            # *up* to the market's precision so it stays at or above $10.
+            notional = HYPERLIQUID_MIN_NOTIONAL_USD * MIN_SIZE_HEADROOM
+        elif self.settings.sizing_mode == "margin":
             notional = calculate_margin_notional(
                 acc.equity, self.settings.margin_per_trade_usd, leverage,
                 intent.entry_price, intent.stop_loss,

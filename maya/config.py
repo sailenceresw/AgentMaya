@@ -24,6 +24,9 @@ class RunMode(str, Enum):
 # Hyperliquid rejects orders below $10 notional (MetaMask Agent Wallet perps
 # guide, Sep 2026).
 HYPERLIQUID_MIN_NOTIONAL_USD = 10.0
+# Minimum-size mode targets this multiple of the minimum, so a mark price that
+# moves between sizing and the order landing cannot push it under $10.
+MIN_SIZE_HEADROOM = 1.05
 
 # Per-side fee rates. Binance USD-M taker is 5bps (conservative — maker is
 # 2bps). Hyperliquid quoted 0.00015 for a limit order via `mm perps quote`.
@@ -150,6 +153,11 @@ class Settings(BaseSettings):
     # *different* wallet address, even for the same email. Set this to the
     # address Maya should trade from and the preflight refuses any other.
     mm_expected_address: str = ""
+    # Size every Hyperliquid order at the venue minimum (~$10.50 notional)
+    # instead of margin/risk sizing. For first live trades: the whole
+    # order lifecycle runs for real, but a stop-out costs cents. Overrides
+    # sizing_mode; every other risk check still applies.
+    perps_min_size: bool = False
     perps_limit_fill_timeout_s: float = 15.0
     perps_fill_poll_s: float = 3.0
     # MetaMask Pulse (`mm pulse asset --hl-perps-market <coin>`): an
@@ -273,6 +281,11 @@ class Settings(BaseSettings):
             return self.fee_rate
         return (HYPERLIQUID_FEE_RATE if self.venue is Venue.HYPERLIQUID
                 else BINANCE_FEE_RATE)
+
+    @property
+    def min_size_trading(self) -> bool:
+        """True when orders are sized at Hyperliquid's minimum notional."""
+        return self.venue is Venue.HYPERLIQUID and self.perps_min_size
 
     @property
     def uses_metamask(self) -> bool:

@@ -795,3 +795,49 @@ def test_empty_testnet_points_to_a_mainnet_dry_run(settings, monkeypatch):
     report, _ = _diagnose(settings, monkeypatch,
                           *_healthy({2: {"ok": True, "data": REAL_BALANCE}}))
     assert any("MAYA_PERPS_DRY_RUN=true" in w for w in report.warnings)
+
+
+# -- minimum-size mode (MAYA_PERPS_MIN_SIZE) --------------------------------- #
+@pytest.fixture
+def min_broker(settings, monkeypatch) -> MetaMaskPerpsBroker:
+    monkeypatch.setattr("maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
+    return prime_market_cache(MetaMaskPerpsBroker(
+        settings.model_copy(update={"perps_min_size": True})))
+
+
+def test_min_size_orders_just_above_the_ten_dollar_minimum(min_broker, intent, monkeypatch):
+    fake = FakeMM({"ok": True, "data": V7_OPEN_FILLED}, {"ok": True, "data": {}})
+    install(monkeypatch, fake)
+
+    assert min_broker.open_position(intent, 0.034, 5) is True   # risk qty is ignored
+    size = float(fake.command(0).split("--size ")[1].split()[0])
+    assert size == pytest.approx(0.00016)            # $10.50 / 66800, rounded UP
+    assert 10.0 <= size * intent.entry_price < 11.0
+
+
+@pytest.mark.parametrize("price,decimals", [
+    (66800.0, 5), (3150.0, 4), (142.37, 2), (0.0213, 0), (1.0001, 1),
+])
+def test_min_size_never_rounds_below_the_minimum(min_broker, intent, monkeypatch,
+                                                  price, decimals):
+    from maya.execution.metamask_broker import _format_size_up
+
+    size = float(_format_size_up(10.5 / price, decimals))
+    assert size * price >= 10.0
+
+
+def test_risk_manager_sizes_at_the_venue_minimum():
+    from maya.risk.manager import RiskManager
+
+    s = Settings(mode=RunMode.SIM, venue=Venue.HYPERLIQUID, perps_min_size=True,
+                 start_equity=1000, leverage=20)
+    intent = TradeIntent(symbol="BTCUSDT", direction="long", setup_name="x",
+                         entry_price=100.0, stop_loss=99.0, take_profit_1=105.0,
+                         take_profit_2=106.0, confluence_score=8, expected_rr=5.0)
+    decision = RiskManager(s, 1000).screen(intent, now_ts=0)
+    assert decision.approved
+    assert decision.position_notional == pytest.approx(10.5)
+
+
+def test_min_size_only_applies_to_hyperliquid():
+    assert not Settings(venue=Venue.BINANCE, perps_min_size=True).min_size_trading

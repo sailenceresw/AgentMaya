@@ -41,6 +41,7 @@ from either is exactly what a wrong key name would produce, and
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -50,7 +51,7 @@ from typing import Any
 
 from loguru import logger
 
-from maya.config import HYPERLIQUID_MIN_NOTIONAL_USD, Settings
+from maya.config import HYPERLIQUID_MIN_NOTIONAL_USD, MIN_SIZE_HEADROOM, Settings
 from maya.execution.models import Position
 from maya.strategy.models import TradeIntent
 
@@ -423,7 +424,14 @@ class MetaMaskPerpsBroker:
         side = "long" if intent.direction == "long" else "short"
         # Precision and leverage limits come from the venue (cached, so this
         # costs one call per symbol per process, not one per order).
-        size = _format_size(qty, self.size_decimals_for(intent.symbol))
+        decimals = self.size_decimals_for(intent.symbol)
+        if self.settings.min_size_trading:
+            # Round UP: rounding the ~$10.50 target down could land under
+            # the $10 minimum. The overshoot is at most one size increment.
+            size = _format_size_up(
+                HYPERLIQUID_MIN_NOTIONAL_USD * MIN_SIZE_HEADROOM / intent.entry_price, decimals)
+        else:
+            size = _format_size(qty, decimals)
         self.check_leverage_supported(intent.symbol, leverage)
         notional = float(size) * intent.entry_price
         if notional < HYPERLIQUID_MIN_NOTIONAL_USD:
@@ -823,6 +831,13 @@ def _format_size(qty: float, decimals: int) -> str:
     factor = 10 ** decimals
     truncated = int(abs(qty) * factor) / factor
     return f"{truncated:.{decimals}f}"
+
+
+def _format_size_up(qty: float, decimals: int) -> str:
+    """Round a size *up* to the venue's precision (minimum-size mode only)."""
+    factor = 10 ** decimals
+    steps = math.ceil(round(abs(qty) * factor, 9))
+    return f"{steps / factor:.{decimals}f}"
 
 
 def _format_price(price: float) -> str:
