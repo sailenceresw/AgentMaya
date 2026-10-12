@@ -19,4 +19,4 @@ ccxt>=4.2.0
 websockets>=12.0
 
 # Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true)
-anthropic>=0.39.0
+anthropic>=1.13.0   # output_config + server-side refusal fallbacks

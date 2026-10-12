@@ -43,9 +43,12 @@ class ScanAgent:
         self.execution = execution
         self.risk = risk
         self._last_managed_ts = 0
+        self.last_scan: list[Candidate] = []   # read by the monitoring API
+        self.steps = 0
 
     def step(self, now_ts: int) -> Candidate | None:
         """Advance one candle. Returns the candidate opened, if any."""
+        self.steps += 1
         self.risk.check_kill_switch(now_ts)
         if self.execution.has_position:
             self._manage(now_ts)
@@ -54,6 +57,7 @@ class ScanAgent:
             return None
 
         results = self.scanner.scan(now_ts)
+        self.last_scan = results
         logger.info("scan:\n{}", format_table(results))
         best = self.scanner.review_best(results)
         if best is None:
@@ -100,7 +104,13 @@ def _sleep_to_next_close(tf_ms: int, grace_s: float = 3.0) -> None:
 
 
 def main() -> None:
-    from maya.run import _configure_logging, _guard_live, _report_scan, _startup_reconciliation
+    from maya.run import (
+        _configure_logging,
+        _guard_live,
+        _report_scan,
+        _start_api,
+        _startup_reconciliation,
+    )
 
     settings = get_settings()
     _configure_logging(settings)
@@ -123,6 +133,10 @@ def main() -> None:
         monitor = PositionMonitor(settings, execution, journal, risk)
         monitor.start()
 
+    # The same dashboard/API as the single-symbol agent (off unless
+    # MAYA_API_ENABLED), plus the latest scan in its snapshot.
+    api = _start_api(settings, agent, journal, lambda: agent.steps)
+
     logger.info("=== Maya scanner === mode={} tf={} up to {} coins",
                 settings.mode.value, settings.timeframe, settings.scan_max_coins)
     tf_ms = timeframe_ms(settings.timeframe)
@@ -139,6 +153,8 @@ def main() -> None:
     finally:
         if monitor is not None:
             monitor.stop()
+        if api is not None:
+            api.stop()
         # Same clean-shutdown rule as the single-symbol agent: flatten, so a
         # restart never finds a venue position the fresh process doesn't know.
         if execution.has_position:

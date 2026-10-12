@@ -6,7 +6,6 @@ Auction Market Theory phase classification.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 
 import numpy as np
 
@@ -120,7 +119,6 @@ def detect_absorption(candles: list[Candle], cluster_pct: float = 0.0015,
     def cluster(levels: list[tuple[float, float]], window: float):
         if len(levels) < min_wicks:
             return None
-        prices = np.array([p for p, _ in levels])
         for ref, _ in levels:
             members = [(p, s) for p, s in levels if abs(p - ref) <= window]
             if len(members) >= min_wicks:

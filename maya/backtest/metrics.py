@@ -83,7 +83,7 @@ def compute_metrics(daily_equity: dict[int, float], trade_rows: list,
     end_equity = equity_series[-1]
 
     daily_returns = []
-    for prev, cur in zip(equity_series, equity_series[1:]):
+    for prev, cur in zip(equity_series, equity_series[1:], strict=False):
         if prev > 0:
             daily_returns.append((cur - prev) / prev)
 

@@ -11,9 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import asdict
 
-from loguru import logger
 
 from maya.execution.engine import TradeResult
 

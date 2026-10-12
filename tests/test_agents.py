@@ -1,8 +1,7 @@
 """Tests for the desk: Atlas, Echo, Flow, Sentinel and Maya's conference."""
-import pytest
 
 from maya.agents import atlas, desk, echo, flow, sentinel
-from maya.agents.models import BEARISH, BLOCK, BULLISH, NEUTRAL, Conference, Finding
+from maya.agents.models import BEARISH, BLOCK, BULLISH, NEUTRAL, Finding
 from maya.config import RiskLimits, RunMode, Settings
 from maya.data.models import Candle
 from maya.risk.manager import RiskManager

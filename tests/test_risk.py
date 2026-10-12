@@ -112,9 +112,9 @@ def test_risk_sizing_mode_still_available():
 
 
 def test_leverage_above_hard_limit_is_rejected_not_clamped():
-    import pytest
+    from pydantic import ValidationError
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError, match="MAX_LEVERAGE"):
         Settings(mode=RunMode.SIM, leverage=RiskLimits.MAX_LEVERAGE + 1)
 
 

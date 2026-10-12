@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections import deque
 
 from maya.data.models import Candle
-from maya.timeframe import label_for, parse_timeframe  # re-exported
+from maya.timeframe import label_for, parse_timeframe  # noqa: F401 - re-exported
 
 
 class TimeframeAggregator:

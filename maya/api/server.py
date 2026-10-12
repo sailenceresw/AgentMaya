@@ -78,8 +78,11 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
             "rr_planned": pos.rr_planned,
         }
 
+    from maya.fees import FeeModel
+
+    fees = FeeModel.for_settings(settings)
     equity_delta = acc.equity - acc.start_equity
-    return {
+    snapshot = {
         "config": {
             "mode": settings.mode.value,
             "venue": settings.venue.value,
@@ -89,6 +92,9 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
             "sizing_mode": settings.sizing_mode,
             "margin_per_trade_usd": settings.margin_per_trade_usd,
             "risk_per_trade_usd": settings.risk_per_trade_usd,
+            # What one round trip costs, so the phone can judge any target.
+            "round_trip_fee_pct": round(fees.worst_round_trip() * 100, 4),
+            "min_net_rr": settings.min_net_rr,
         },
         "account": {
             "equity": round(acc.equity, 2),
@@ -106,6 +112,22 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
         "lifetime": lifetime,
         "candles_processed": processed,
     }
+    # Scanner agent only: the latest scan, best first, with each coin's fate.
+    scan = getattr(nodes, "last_scan", None)
+    if scan is not None:
+        snapshot["scan"] = [
+            {
+                "coin": c.market.coin,
+                "setup": c.intent.setup_name if c.intent else None,
+                "direction": c.intent.direction if c.intent else None,
+                "net_rr": round(c.net_rr, 2),
+                "fee_share_pct": round(c.fee_share * 100, 1) if c.intent else None,
+                "desk": c.desk_verdict,
+                "status": "trade" if c.tradable else c.rejected,
+            }
+            for c in scan
+        ]
+    return snapshot
 
 
 class MonitorServer:

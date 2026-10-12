@@ -11,8 +11,8 @@ day inside a week that has its own history, not an isolated coin flip.
 
 The model is driven by the parameters the live system really uses — the
 fixed-USD risk amount from ``Settings.risk_per_trade_usd``, the notional cap
-and loss limits from ``RiskLimits``, and the ``FEE_RATE`` constant the
-execution engine charges.
+and loss limits from ``RiskLimits``, and the venue's fee model
+(:mod:`maya.fees`) the execution engine charges.
 
 **What is modeled** (all of it enforced per simulated day, not approximated):
 
@@ -53,7 +53,6 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from maya.config import RiskLimits, Settings
-from maya.execution.engine import FEE_RATE
 
 TRADING_DAYS_PER_WEEK = 5
 
@@ -109,8 +108,9 @@ class SimParams:
     # a meaningful share of risk.
     slippage_bps: float = 2.0
     # Per-side fee rate, resolved from the venue like everything else here.
-    # Hyperliquid quoted 0.00015 for a limit order; Binance USD-M taker is
-    # 0.0005. Using the wrong one misstates cost drag by >3x.
+    # Per-side average of the venue's worst-case round trip (maya.fees):
+    # 13bps through MetaMask on Hyperliquid (exchange + builder fee), 3.5bps
+    # on Binance. Using the wrong venue misstates cost drag several-fold.
     fee_rate: float = field(default_factory=lambda: Settings().effective_fee_rate)
     # Hyperliquid charges funding **hourly**, not every 8 hours. The default is
     # the rate actually observed on BTC testnet (-0.0000693105/h, taken as a
@@ -228,12 +228,14 @@ class SimResult:
     mean_trades_per_day: float
 
 
-def fee_pct_of_equity(risk_pct: float, avg_stop_distance_pct: float) -> float:
+def fee_pct_of_equity(risk_pct: float, avg_stop_distance_pct: float,
+                      fee_rate: float | None = None) -> float:
     """Round-trip fee cost as % of equity for one trade, derived from the real
-    position-sizing formula (notional = risk / stop_distance) and the real
-    FEE_RATE constant — not a guessed number."""
+    position-sizing formula (notional = risk / stop_distance) and the venue's
+    per-side fee rate (``Settings().effective_fee_rate`` unless given)."""
+    rate = Settings().effective_fee_rate if fee_rate is None else fee_rate
     notional_pct_of_equity = (risk_pct / 100) / (avg_stop_distance_pct / 100)
-    return notional_pct_of_equity * FEE_RATE * 2 * 100
+    return notional_pct_of_equity * rate * 2 * 100
 
 
 def simulate_detailed(params: SimParams) -> SimResult:
@@ -396,7 +398,6 @@ def simulate_detailed(params: SimParams) -> SimResult:
     # Trim to exactly the days requested: `weeks` rounds up, so a `days` that
     # is not a multiple of 5 would otherwise report a slightly larger sample.
     daily_flat = daily_returns.reshape(n_weeks * TRADING_DAYS_PER_WEEK, n)[:params.days]
-    total_days = daily_flat.size
     return SimResult(
         daily_returns=daily_flat.ravel(order="C").tolist(),
         weekly_returns=weekly_returns.ravel(order="C").tolist(),

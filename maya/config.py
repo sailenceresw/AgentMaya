@@ -191,7 +191,9 @@ class Settings(BaseSettings):
 
     # LLM veto layer
     llm_enabled: bool = False
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = "claude-opus-5-5"
+    # A veto is a short yes/no judgement; low effort keeps it fast and cheap.
+    llm_effort: str = "low"
 
     log_level: str = "INFO"
 

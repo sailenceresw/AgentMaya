@@ -50,6 +50,7 @@ from maya.config import Settings, get_settings
 from maya.data.models import Candle
 from maya.fees import FeeModel, economics
 from maya.risk.manager import RiskDecision, RiskManager
+from maya.signals.models import SignalObject
 from maya.signals.processor import SignalProcessor
 from maya.strategy.engine import StrategyEngine
 from maya.strategy.models import TradeIntent
@@ -95,6 +96,7 @@ class Candidate:
     breakeven_win_rate: float = 1.0
     rejected: str = ""        # why it is not tradable, if it isn't
     patterns: list[str] = field(default_factory=list)
+    signal: SignalObject | None = None   # the bar the setup fired on
 
     @property
     def tradable(self) -> bool:
@@ -199,14 +201,20 @@ class Scanner:
         strategy = StrategyEngine(self._coin_settings)
         intent, sig = None, None
         # Replay history so rolling state (CVD, swings, HTF) is warm; only an
-        # intent on the final, just-closed bar is a live setup.
-        for i, candle in enumerate(candles):
-            sig = processor.process(candle, funding_rate=market.funding_rate)
-            last = i == len(candles) - 1
-            found = strategy.evaluate(sig)
-            if last:
-                intent = found
+        # intent on the final, just-closed bar is a live setup. The strategy
+        # logs every intent it sees, which during a replay is hundreds of
+        # stale setups per coin, so its logging is muted until the last bar.
+        logger.disable("maya.strategy")
+        try:
+            for i, candle in enumerate(candles):
+                sig = processor.process(candle, funding_rate=market.funding_rate)
+                if i == len(candles) - 1:
+                    logger.enable("maya.strategy")
+                intent = strategy.evaluate(sig)
+        finally:
+            logger.enable("maya.strategy")
         cand.patterns = list(sig.patterns) if sig else []
+        cand.signal = sig
         if intent is None:
             cand.rejected = "no setup on the last closed candle"
             return cand
@@ -249,21 +257,12 @@ class Scanner:
         for cand in results:
             if not cand.tradable:
                 break
-            approved, reason = self._llm.review(cand.intent, _sig_stub(cand))
+            approved, reason = self._llm.review(cand.intent, cand.signal)
             if approved:
                 return cand
             logger.info("LLM vetoed {} {}: {}", cand.market.coin,
                         cand.intent.direction, reason)
         return None
-
-
-def _sig_stub(cand: Candidate):
-    """Minimal signal context for the LLM review of a scanned trade."""
-    from types import SimpleNamespace
-
-    return SimpleNamespace(price=cand.intent.entry_price, cvd_1m=0.0, cvd_divergence=None,
-                           amt_phase=cand.desk_rationale, funding_rate=cand.market.funding_rate,
-                           volume=1.0, avg_volume=1.0)
 
 
 def format_table(results: list[Candidate]) -> str:

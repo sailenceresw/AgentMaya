@@ -58,6 +58,8 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private View setup, dashboard;
     private TextView configPill, equity, pnl, state, position, stats, trades, footer, setupError;
+    private TextView scan;
+    private View scanCard;
     private Button halt;
 
     private final Runnable poll = new Runnable() {
@@ -82,6 +84,8 @@ public class MainActivity extends Activity {
         position = findViewById(R.id.position);
         stats = findViewById(R.id.stats);
         trades = findViewById(R.id.trades);
+        scan = findViewById(R.id.scan);
+        scanCard = findViewById(R.id.scanCard);
         footer = findViewById(R.id.footer);
         setupError = findViewById(R.id.setupError);
         halt = findViewById(R.id.halt);
@@ -274,7 +278,8 @@ public class MainActivity extends Activity {
                       + "\nLoss streak   " + acc.getInt("consecutive_losses")
                     : "Trades        " + n
                       + "\nWin rate      " + run.optDouble("win_rate", 0) + "%"
-                      + "\nPnL           " + money(run.optDouble("total_pnl_usdt", 0))
+                      + "\nPnL (net)     " + money(run.optDouble("total_pnl_usdt", 0))
+                      + "\nFees paid     " + money(run.optDouble("total_fees", 0))
                       + "\nProfit factor " + run.opt("profit_factor")
                       + "\nTrades today  " + acc.getInt("trades_today")
                       + "\nLoss streak   " + acc.getInt("consecutive_losses"));
@@ -294,6 +299,28 @@ public class MainActivity extends Activity {
                 }
                 trades.setTextColor(0xFFE6EDF3);
                 trades.setText(sb.toString());
+            }
+
+            // Scanner agent only: each coin from the latest scan and its fate.
+            JSONArray scanned = d.optJSONArray("scan");
+            if (scanned == null) {
+                scanCard.setVisibility(View.GONE);
+            } else {
+                scanCard.setVisibility(View.VISIBLE);
+                StringBuilder sb = new StringBuilder(String.format(Locale.US,
+                        "fees %.2f%% round trip · net R:R ≥ %s\n",
+                        cfg.optDouble("round_trip_fee_pct", 0), cfg.opt("min_net_rr")));
+                for (int i = 0; i < Math.min(scanned.length(), 10); i++) {
+                    JSONObject c = scanned.getJSONObject(i);
+                    String status = c.optString("status");
+                    sb.append('\n').append(String.format(Locale.US, "%-6s %-5s %5s  %s",
+                            truncate(c.optString("coin"), 6),
+                            c.isNull("direction") ? "-" : c.optString("direction"),
+                            c.isNull("setup") ? "" : String.format(Locale.US, "%.2f",
+                                    c.optDouble("net_rr", 0)),
+                            "trade".equals(status) ? "TRADE" : truncate(status, 28)));
+                }
+                scan.setText(sb.toString());
             }
 
             boolean halted = "halted".equals(st);

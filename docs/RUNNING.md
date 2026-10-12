@@ -274,11 +274,12 @@ exactly the argv the broker builds returned:
 `notional: "400.13"` for $20 of margin at 20x — and reports
 `estimatedLiquidationPrice: "70140"`, a 5.0% adverse move against a 0.70% stop.
 
-**Fee rate corrected.** The quote reports `feeRate: 0.00015` — Hyperliquid
-charges 1.5bps for a limit order, while the engine hardcoded the Binance taker
-rate of 5bps, overstating fees 3.3x on every Hyperliquid PnL calculation. Fees
-are now venue-resolved (`Settings.effective_fee_rate`, overridable with
-`MAYA_FEE_RATE`). Funding is also charged **hourly** on Hyperliquid, not
+**Fee rate (superseded — see "Fees: what a trade really costs").** The quote
+reports `feeRate: 0.00015`: Hyperliquid's 1.5bps *maker* rate. This was first
+used as the whole per-side cost, which left out the taker rate on trigger
+exits and MetaMask's builder fee on every leg. Fees are now charged leg by leg
+from `maya/fees.py`, and the real `feeRate`/`builderFeeBips` are read from
+`mm perps quote` at startup. Funding is also charged **hourly** on Hyperliquid, not
 8-hourly as the simulator assumed.
 
 ### CLI v7.1 update (October 2026)
@@ -773,6 +774,25 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 When enabled, an LLM reviews each trade the rules already approved and may
 **veto** it (it can never originate a trade — spec section 6.4).
+
+- **Model:** `MAYA_LLM_MODEL`, default `claude-opus-5-5`, at
+  `MAYA_LLM_EFFORT=low`. A veto is a short yes/no judgement. On this model
+  thinking is always on and counts against the response budget, so the
+  request allows 4,096 tokens.
+- **Verdict format:** `{"approve": bool, "reason": str}`, enforced by a JSON
+  schema (structured outputs). A reply can no longer be prose or fenced JSON
+  that fails to parse.
+- **Refusals:** on models that support it, the request opts into server-side
+  `fallbacks: "default"`. If a safety classifier declines the review, the API
+  re-runs it on Anthropic's recommended substitute within the same call.
+- **Failure is never a block:** a refusal, a truncated reply, unparseable
+  output or a network error all **approve** the trade, with a warning. The
+  deterministic risk layer (hard limits, liquidation guard, fee gate) is the
+  gate, and an API outage must not stop trading or strand a decision.
+- **Scanner:** the per-coin replays never call the LLM. Only the one trade
+  actually chosen is reviewed, with that coin's real signal.
+- **Context:** with `MAYA_PULSE_ENABLED=true` the review also receives
+  MetaMask Pulse's market summary (see the MetaMask section).
 
 ## Tests
 

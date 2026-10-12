@@ -1,5 +1,5 @@
 """Tests for the Monte Carlo daily-return simulator — checks the fee math
-against the real FEE_RATE constant, pins the sizing/leverage semantics, and
+against the venue fee model, pins the sizing/leverage semantics, and
 sanity-checks the distribution shape with a fixed seed (deterministic, not
 flaky)."""
 import statistics
@@ -13,14 +13,19 @@ from maya.backtest.monte_carlo import (
     simulate_detailed,
     summarize,
 )
-from maya.execution.engine import FEE_RATE
 
 
 def test_fee_pct_matches_hand_calculation():
-    # risk=0.5%, stop=0.5% -> notional = 100% of equity -> fee = 1.0 * FEE_RATE * 2 * 100
-    fee = fee_pct_of_equity(risk_pct=0.5, avg_stop_distance_pct=0.5)
-    expected = 1.0 * FEE_RATE * 2 * 100
-    assert abs(fee - expected) < 1e-9
+    # risk=0.5%, stop=0.5% -> notional = 100% of equity -> fee = 1.0 * rate * 2 * 100
+    fee = fee_pct_of_equity(risk_pct=0.5, avg_stop_distance_pct=0.5, fee_rate=0.0013)
+    assert abs(fee - 1.0 * 0.0013 * 2 * 100) < 1e-9
+
+
+def test_fee_pct_defaults_to_the_configured_venue():
+    from maya.config import Settings
+
+    expected = 1.0 * Settings().effective_fee_rate * 2 * 100
+    assert fee_pct_of_equity(0.5, 0.5) == pytest.approx(expected)
 
 
 def test_tighter_stop_means_bigger_notional_means_more_fee_drag():

@@ -194,6 +194,22 @@
                         android:fontFamily="monospace" />
                 </LinearLayout>
 
+                <!-- Scanner (only when the scanner agent is running) -->
+                <LinearLayout
+                    android:id="@+id/scanCard"
+                    style="@style/Card"
+                    android:visibility="gone">
+                    <TextView style="@style/CardTitle" android:text="LAST SCAN" />
+                    <TextView
+                        android:id="@+id/scan"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#E6EDF3"
+                        android:textSize="12sp"
+                        android:lineSpacingExtra="4dp"
+                        android:fontFamily="monospace" />
+                </LinearLayout>
+
                 <Button
                     android:id="@+id/halt"
                     android:layout_width="match_parent"

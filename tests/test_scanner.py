@@ -188,3 +188,24 @@ def test_scan_agent_stands_aside_when_nothing_pays(setup_candles):
     agent = ScanAgent(settings, TradeJournal(db_path=":memory:"), scanner, execution, risk)
     assert agent.step(now_ts=setup_candles[-1].timestamp) is None
     assert not execution.has_position
+
+
+def test_dashboard_snapshot_includes_the_latest_scan_and_fees(setup_candles):
+    from maya.api.server import build_snapshot
+    from maya.execution.engine import ExecutionEngine
+    from maya.journal.store import TradeJournal
+    from maya.risk.manager import RiskManager
+    from maya.scan_run import ScanAgent
+
+    settings = _settings()
+    risk = RiskManager(settings, 1000)
+    scanner = _scanner(setup_candles)
+    scanner.risk = risk
+    journal = TradeJournal(db_path=":memory:")
+    agent = ScanAgent(settings, journal, scanner, ExecutionEngine(settings), risk)
+    agent.step(now_ts=setup_candles[-1].timestamp)
+
+    snap = build_snapshot(settings, agent, journal, agent.steps)
+    assert snap["scan"][0]["coin"] == "BTC" and snap["scan"][0]["status"] == "trade"
+    assert snap["config"]["round_trip_fee_pct"] == pytest.approx(0.26)
+    assert snap["position"]["symbol"] == "BTCUSDT"
