@@ -1,6 +1,8 @@
 """Tests for the exchange-fill reconciliation path used by the position
 monitor (testnet/live) — see maya/execution/monitor.py and
 ExecutionEngine.reconcile_external_close."""
+import pytest
+
 from maya.config import RunMode, Settings
 from maya.execution.engine import ExecutionEngine
 from maya.execution.monitor import PositionMonitor
@@ -152,3 +154,23 @@ def test_target_fill_is_journaled_as_a_win(monkeypatch):
 def test_no_mark_price_assumes_the_stop(monkeypatch):
     monitor, engine = _hl_monitor(monkeypatch, mark=None)
     assert monitor._last_fill(engine.position)[:3:2] == (95, "stop_loss")
+
+
+def test_r_multiple_survives_a_breakeven_stop_move():
+    """Regression: R was measured against the *current* stop. After a
+    breakeven move that is the entry price, risk read as 0 and every such
+    trade — winners included — was journaled at 0R."""
+    engine = ExecutionEngine(_settings())
+    engine.open(_intent(), _Decision(), ts=0)       # long 100, stop 95, target 120
+    engine.position.stop_loss = 100.0               # moved to breakeven
+    engine.position.moved_to_breakeven = True
+    result = engine.reconcile_external_close(exit_price=120, ts=1, reason="take_profit")
+    assert result.rr_realized == pytest.approx(20 / 5)   # +20 on an initial 5 risk
+
+
+def test_r_multiple_after_breakeven_exit_is_zero_not_undefined():
+    engine = ExecutionEngine(_settings())
+    engine.open(_intent(), _Decision(), ts=0)
+    engine.position.stop_loss = 100.0
+    result = engine.reconcile_external_close(exit_price=100, ts=1, reason="stop_loss")
+    assert result.rr_realized == 0.0

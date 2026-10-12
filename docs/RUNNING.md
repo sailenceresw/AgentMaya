@@ -631,16 +631,42 @@ MAYA_BACKTEST_START=2025-01-01 MAYA_BACKTEST_END=2025-12-31 \
 python -m maya.backtest.runner
 ```
 
-Historical OHLCV comes from Binance's public REST klines endpoint (no keys
-needed) and is cached to CSV under `data/` so repeat runs over the same
-range don't re-download. **Important caveat:** getting genuine historical
-tick-level trade data at 12-month scale is out of scope here, so each
-candle's trades are reconstructed synthetically from its OHLCV shape (same
-approach as the sim feed) — CVD/absorption signals in a backtest are an
-approximation of real order flow, not the genuine article. Treat results as
-directional, not a precise live forecast; that gap is exactly why the spec's
-paper-trading gate (§14.2) requires live results within 30% of backtest
-expectations before going further.
+Historical klines come from Binance's public REST endpoint (no keys needed)
+and are cached to CSV under `data/`, so repeat runs over the same range
+don't re-download. Each kline carries Binance's **taker-buy volume** (field
+9), which gives every candle its exact aggressive buy/sell split, so CVD,
+absorption and AMT phase in a backtest run on **real order flow**, not a
+reconstruction. Only caches written before that column existed fall back to
+synthetic ticks, and the loader logs when it does.
+
+### Get the data once, then work offline
+
+```bash
+# From Binance's public API, straight into the cache the backtester reads:
+python -m maya.data.download --symbols BTCUSDT,ETHUSDT,SOLUSDT \
+    --timeframes 15m,1h --start 2025-01-01 --end 2025-12-31
+
+# Where the API is blocked: monthly dump files from https://data.binance.vision
+# (USD-M futures: data/futures/um/monthly/klines/<SYMBOL>/<TF>/), downloaded by browser:
+python -m maya.data.download --import-dumps ~/Downloads/BTCUSDT-1h-2025-*.zip \
+    --symbols BTCUSDT --timeframes 1h --start 2025-01-01 --end 2025-12-31
+```
+
+Both paths keep the taker-buy column, and the file names match what
+`maya.backtest.runner` and `maya.backtest.sweep` look for. Funding history
+is fetched alongside (`--no-funding` skips it).
+
+### Charts
+
+```bash
+pip install matplotlib
+MAYA_BACKTEST_PLOT=btc_1h.png python -m maya.backtest.runner      # one run
+python -m maya.backtest.sweep ... --plot-dir charts/              # one PNG per pair
+```
+
+Each chart shows equity after fees, its running peak and the drawdown,
+headed by trades, return, profit factor, fees paid, max drawdown, Sharpe
+and the §14.1 GO/NO-GO verdict.
 
 Drawdown and Sharpe are computed off the *realized* daily equity curve
 (equity updates only when a trade closes), not a full intratrade

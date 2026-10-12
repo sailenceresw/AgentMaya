@@ -220,3 +220,23 @@ def test_there_is_no_endpoint_that_resumes_or_opens_a_trade(live_api):
 def test_unknown_routes_404(live_api):
     server, _ = live_api
     assert _call(server, "/api/nope")[0] == 404
+
+
+def test_snapshot_json_is_valid_even_with_no_losing_trades():
+    """Regression: profit_factor was float('inf') with no losses, served as
+    `Infinity` — invalid JSON that froze the dashboard and the phone app."""
+    import json as _json
+
+    from maya.api.server import json_safe
+    from maya.journal.store import TradeJournal
+    from maya.execution.engine import TradeResult
+    from maya.execution.models import Position
+
+    j = TradeJournal(db_path=":memory:")
+    pos = Position("BTCUSDT", "long", "x", 100, 95, 120, quantity=0.1, notional=10,
+                   leverage=5, opened_ts=0, confluence_score=8, rr_planned=5.0)
+    j.record(TradeResult(pos, 120.0, pnl_usdt=2.0, fees_usdt=0.01, rr_realized=4.0,
+                         result="win", exit_ts=1, reason="take_profit"), [])
+    metrics = j.metrics()
+    assert metrics["profit_factor"] is None
+    _json.dumps(json_safe({"run": metrics, "x": float("nan")}), allow_nan=False)

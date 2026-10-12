@@ -47,7 +47,7 @@ class SimulatedFeed:
         self.rng = random.Random(seed)
         self.price = 67_500.0
         self.tf_ms = timeframe_ms(settings.timeframe)
-        self.t = int(time.time() * 1000) - settings.max_candles * self.tf_ms
+        self.t = int(time.time() * 1000) - (settings.candle_limit or 500) * self.tf_ms
         self.recent_high = self.price
         self.recent_low = self.price
         self._absorb_left = 0          # remaining candles in an absorption burst
@@ -81,7 +81,7 @@ class SimulatedFeed:
         return trades
 
     def candles(self) -> Iterator[Candle]:
-        n = self.settings.max_candles or 500
+        n = self.settings.candle_limit or 500
         for i in range(n):
             drift, vol_pct = self._regime(i)
             o = self.price
@@ -215,7 +215,7 @@ class CCXTFeed:
 
     def candles(self) -> Iterator[Candle]:
         emitted = 0
-        limit = self.settings.max_candles or 10**9
+        limit = self.settings.candle_limit or 10**9
         while emitted < limit:
             try:
                 ohlcv = self._fetch_recent()

@@ -58,7 +58,14 @@ class SignalObject:
     long_short_ratio: float = 1.0
     volume: float = 0.0
     avg_volume: float = 0.0
-    range_pct: float = 0.0                # rolling range as % of price
+    # The compression range (spec 6.2 Setup 3): high-to-low of the
+    # COMPRESSION_LOOKBACK candles *before* this one, as a fraction of its
+    # midpoint. The current candle is excluded so a breakout bar cannot widen
+    # the very range it is breaking out of. None until enough history exists.
+    range_pct: float = 0.0
+    range_high: Optional[float] = None
+    range_low: Optional[float] = None
+    open: float = 0.0                     # candle open, for body-size checks
     # Average True Range of the entry timeframe. Stops are placed off this
     # rather than off a fixed percentage: a 0.3% stop is ~4x BTC's typical 1m
     # ATR, which made the reward:risk of a value-area fade structurally

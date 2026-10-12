@@ -27,13 +27,19 @@ from typing import Iterator
 
 from loguru import logger
 
-from maya.backtest.data_loader import fetch_historical_klines, historical_candles
+from maya.backtest.data_loader import (
+    fetch_historical_klines,
+    funding_cache_path,
+    historical_candles,
+    klines_cache_path,
+)
 from maya.backtest.funding import FundingSchedule, fetch_funding_rates
 from maya.backtest.metrics import BacktestMetrics, compute_metrics
 from maya.config import Settings, get_settings
 from maya.data.models import Candle
 from maya.graph import build_graph
 from maya.journal.store import TradeJournal
+from maya.execution.engine import flatten_on_shutdown
 from maya.nodes import TradingNodes
 
 _DAY_MS = 86_400_000
@@ -52,7 +58,9 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
     daily_equity: dict[int, float] = {}
     started = time.monotonic()
     n = 0
+    last: Candle | None = None
     for candle in candles:
+        last = candle
         graph.invoke({"candle": candle})
         n += 1
         if progress_every and n % progress_every == 0:
@@ -71,12 +79,12 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
                            ", ".join(nodes.risk.account.halt_reasons))
             break
 
-    if nodes.execution.has_position:
-        last_price = nodes.execution.position.entry_price
-        result = nodes.execution.force_close(last_price, 0)
+    if nodes.execution.has_position and last is not None:
+        # Mark to the last close the backtest saw, on the day it saw it.
+        result = flatten_on_shutdown(nodes.execution, nodes.risk, journal,
+                                     last.close, last.timestamp)
         if result:
-            journal.record(result, result.position.confluences)
-            day = (result.exit_ts // _DAY_MS) * _DAY_MS
+            day = (last.timestamp // _DAY_MS) * _DAY_MS
             daily_equity[day] = nodes.risk.account.equity
 
     trade_rows = journal.conn.execute(
@@ -117,7 +125,7 @@ def main() -> None:
     end = os.environ.get("MAYA_BACKTEST_END", "2025-12-31")
     cache = os.environ.get(
         "MAYA_BACKTEST_CACHE",
-        f"data/klines_{settings.symbol}_{settings.timeframe}_{start}_{end}.csv",
+        klines_cache_path(settings.symbol, settings.timeframe, start, end),
     )
 
     try:
@@ -134,7 +142,7 @@ def main() -> None:
 
     funding_cache = os.environ.get(
         "MAYA_FUNDING_CACHE",
-        f"data/funding_{settings.symbol}_{start}_{end}.csv",
+        funding_cache_path(settings.symbol, start, end),
     )
     funding = FundingSchedule(
         fetch_funding_rates(settings, start_ms, end_ms, cache_path=funding_cache))
@@ -143,6 +151,15 @@ def main() -> None:
     metrics = run_backtest(settings, historical_candles(rows), total=len(rows),
                            funding=funding)
     _print_report(metrics, start, end)
+    plot_path = os.environ.get("MAYA_BACKTEST_PLOT")
+    if plot_path:
+        from maya.backtest.plot import save_equity_plot
+        try:
+            save_equity_plot(metrics, plot_path,
+                             title=f"{settings.symbol} {settings.timeframe} {start}→{end}")
+            logger.info("Equity chart written to {}", plot_path)
+        except (ValueError, RuntimeError) as exc:
+            logger.warning("no chart: {}", exc)
     sys.exit(0 if all(metrics.passes_gate().values()) else 1)
 
 

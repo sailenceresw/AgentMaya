@@ -14,9 +14,16 @@ loguru>=0.7
 
 # Exchange integration (live / testnet — only used when MAYA_MODE != sim)
 ccxt>=4.2.0
+# Binance's official USD-M SDK, used by the Binance preflight
+# (maya.check_connection), which runs before every paper/testnet/live start.
+# Verified against 17.6: every REST method the preflight calls exists there.
+binance-sdk-derivatives-trading-usds-futures>=17.6,<18
 
 # Optional real-time WebSocket ingestion (only used when MAYA_USE_WEBSOCKET=true)
 websockets>=12.0
 
 # Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true)
 anthropic>=1.13.0   # output_config + server-side refusal fallbacks
+
+# Optional backtest charts (MAYA_BACKTEST_PLOT / sweep --plot-dir)
+matplotlib>=3.8

@@ -184,7 +184,11 @@ class TradeJournal:
             "total_pnl_usdt": round(total_pnl, 2),
             "gross_profit": round(gross_profit, 2),
             "gross_loss": round(gross_loss, 2),
-            "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else float("inf"),
+            # None, not inf, when nothing has lost yet: these metrics are served
+            # as JSON, and float("inf") serialises as `Infinity`, which no JSON
+            # parser accepts — the dashboard stopped updating after the first
+            # all-winning run.
+            "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else None,
             "avg_win": round(avg_win, 2),
             "avg_loss": round(avg_loss, 2),
             "expectancy": round(total_pnl / n, 2),

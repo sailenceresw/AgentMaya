@@ -39,6 +39,25 @@ class TradeResult:
     reason: str
 
 
+def flatten_on_shutdown(execution: "ExecutionEngine", risk, journal, price: float,
+                        ts: int) -> TradeResult | None:
+    """Close any open position at ``price``/``ts`` and account for it fully.
+
+    Every runner used to call ``force_close(entry_price, 0)`` here: the trade
+    was booked at its own entry price (≈$0 PnL whatever the market had done),
+    stamped 1 January 1970, and never reported to the risk manager. In a
+    backtest that also planted a 1970 point in the equity curve. Callers pass
+    the last price they actually saw.
+    """
+    if not execution.has_position:
+        return None
+    result = execution.force_close(price, ts)
+    if result is not None:
+        journal.record(result, result.position.confluences)
+        risk.on_trade_closed(result.pnl_usdt, ts)
+    return result
+
+
 class ExecutionEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -90,7 +109,10 @@ class ExecutionEngine:
         gross = pos.pnl_at(exit_price)
         fees = self.fees.cost_usd(pos.notional, self.order_type, reason)
         pnl = gross - fees
-        risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
+        # Against the stop placed at entry: after a breakeven move the current
+        # stop sits at entry, the risk reads as zero and every such trade —
+        # winners included — was journaled as 0R.
+        risk = pos.initial_risk_usd
         rr = (gross / risk) if risk else 0.0
         result = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
         self.broker.close_position(pos, exit_price, reason)
@@ -171,7 +193,7 @@ class ExecutionEngine:
             fees = fees_usdt if fees_usdt is not None else \
                 self.fees.cost_usd(pos.notional, self.order_type, reason)
             pnl = gross - fees
-            risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
+            risk = pos.initial_risk_usd
             rr = (gross / risk) if risk else 0.0
             result = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
             self.position = None

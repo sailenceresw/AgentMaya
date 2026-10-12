@@ -108,3 +108,31 @@ def test_empty_funding_schedule_is_flat_not_an_error():
 def test_funding_schedule_sorts_unordered_input():
     s = FundingSchedule([(9_000, -0.0002), (1_000, 0.0001)])
     assert s.rate_at(5_000) == 0.0001
+
+
+def test_open_position_at_end_of_backtest_is_marked_to_the_last_close():
+    """Regression: the forced close used the entry price at ts=0, booking
+    ~$0 PnL, planting a 1970 point in the equity curve and skipping the risk
+    manager."""
+    from maya.backtest.runner import run_backtest
+    from maya.config import RunMode, Settings
+    from maya.data.scenarios import ScenarioFeed
+
+    settings = Settings(mode=RunMode.SIM, scenario=True)
+    scenario = list(ScenarioFeed(settings).candles())
+    # Find the entry bar, then stop one bar after it so the trade is still open.
+    from maya.signals.processor import SignalProcessor
+    from maya.strategy.engine import StrategyEngine
+    proc, strat = SignalProcessor(settings.symbol, htf_timeframes=settings.htf_list), \
+        StrategyEngine(settings)
+    cut = next(i for i, c in enumerate(scenario) if strat.evaluate(proc.process(c)))
+    candles = scenario[: cut + 2]
+
+    path = ":memory:"
+    metrics = run_backtest(settings, iter(candles), journal_path=path, progress_every=0)
+    assert metrics.trades == 1
+    entry = 66800.0
+    last_close = candles[-1].close
+    expected_gross_sign = 1 if last_close < entry else -1   # the scenario trade is a short
+    assert (metrics.total_pnl_usdt + metrics.total_fees) * expected_gross_sign > 0
+    assert metrics.end_equity == metrics.start_equity + metrics.total_pnl_usdt

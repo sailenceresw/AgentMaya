@@ -94,3 +94,33 @@ def test_session_metrics_cannot_be_defeated_by_synthetic_timestamps(tmp_path):
     assert journal.metrics(session_only=True)["trades"] == 1
     assert _fake_result(18.16).exit_ts < int(time.time() * 1000)
     journal.close()
+
+
+def test_swing_context_keeps_updating_while_a_position_is_open():
+    """Regression: the strategy only recorded swings when it evaluated, which
+    the graph skips while in a trade, so its context froze for the hold."""
+    from maya.journal.store import TradeJournal
+    from maya.nodes import TradingNodes
+    from maya.config import RunMode, Settings
+    from maya.data.models import Candle
+
+    nodes = TradingNodes(Settings(mode=RunMode.SIM), TradeJournal(db_path=":memory:"),
+                         equity=1000, now_ts=0)
+    nodes.execution.position = object()          # pretend a trade is open
+    for i in range(5):
+        c = Candle(i * 60_000, 100 + i, 101 + i, 99 + i, 100.5 + i, 10)
+        sig = nodes.signal_node({"candle": c})["signal"]
+        assert nodes.strategy_node({"signal": sig})["intent"] is None
+    assert max(nodes.strategy.highs) == 105      # the latest bar's high was recorded
+
+
+def test_real_data_runs_are_unlimited_by_default_and_sim_is_a_short_demo():
+    """Regression: max_candles defaulted to 200 in every mode, so paper,
+    testnet and live runs stopped after 200 candles and flattened."""
+    from maya.config import RunMode, Settings
+
+    assert Settings(mode=RunMode.SIM).candle_limit == 200
+    for mode in (RunMode.PAPER, RunMode.TESTNET, RunMode.LIVE):
+        assert Settings(mode=mode).candle_limit == 0
+    assert Settings(mode=RunMode.LIVE, max_candles=50).candle_limit == 50
+    assert Settings(mode=RunMode.SIM, max_candles="").candle_limit == 200

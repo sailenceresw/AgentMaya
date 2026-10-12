@@ -22,6 +22,17 @@ class Position:
     rr_planned: float
     confluences: list[str] = field(default_factory=list)
     moved_to_breakeven: bool = False
+    # The stop as placed at entry. ``stop_loss`` moves (breakeven), but the
+    # trade's risk — the denominator of its R-multiple — was fixed at entry.
+    initial_stop_loss: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.initial_stop_loss is None:
+            self.initial_stop_loss = self.stop_loss
+
+    @property
+    def initial_risk_usd(self) -> float:
+        return abs(self.entry_price - self.initial_stop_loss) * self.quantity
 
     def unrealized_pnl(self, price: float) -> float:
         diff = price - self.entry_price

@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     venue: Venue = Venue.BINANCE
     symbol: str = "BTCUSDT"
     timeframe: str = "1m"
-    max_candles: int = 200
+    # Candles to process before stopping; 0 = run until stopped. Unset, it is
+    # 200 for the simulator (a quick demo) and unlimited whenever real market
+    # data is involved: a fixed 200 used to stop paper, testnet and LIVE runs
+    # after 200 candles (3h20m on 1m) and flatten the open position on exit.
+    max_candles: int | None = None
     start_equity: float = 1000.0
 
     # Higher timeframes folded from the 1m stream for chart reading (trend,
@@ -178,6 +182,13 @@ class Settings(BaseSettings):
     pulse_enabled: bool = False
     pulse_ttl_s: int = 900
 
+    # Setup 3 (compression breakout) was unreachable until it was rebuilt to
+    # spec, so it has never been measured, and it confirms longs with the CVD
+    # sign the README's 24-month study found to point the wrong way. Off by
+    # default so live behaviour matches what was measured; turn on only after
+    # `maya.backtest.sweep` shows it paying after fees.
+    compression_breakout_enabled: bool = False
+
     # -- Multi-coin scanner (maya.scanner / maya.scan_run) ------------------ #
     # Coins come from Hyperliquid's public market list, busiest first.
     scan_max_coins: int = 15
@@ -231,7 +242,7 @@ class Settings(BaseSettings):
         return v
 
     @field_validator("fee_rate", "fee_maker_bps", "fee_taker_bps", "builder_fee_bps",
-                     mode="before")
+                     "max_candles", mode="before")
     @classmethod
     def _blank_means_unset(cls, v):
         """``MAYA_BUILDER_FEE_BPS=`` in a .env means "use the default", not a
@@ -294,6 +305,13 @@ class Settings(BaseSettings):
         # Everything configured was too low: scale the usual 15x/60x-of-1m
         # relationship up from whatever the entry timeframe actually is.
         return [label_for(base * 4), label_for(base * 16)]
+
+    @property
+    def candle_limit(self) -> int:
+        """How many candles to run; 0 means until stopped."""
+        if self.max_candles is not None:
+            return max(self.max_candles, 0)
+        return 200 if self.mode is RunMode.SIM else 0
 
     @property
     def is_live(self) -> bool:

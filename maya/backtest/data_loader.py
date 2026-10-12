@@ -44,6 +44,16 @@ from maya.timeframe import timeframe_ms
 _KLINE_LIMIT = 1000
 
 
+def klines_cache_path(symbol: str, timeframe: str, start: str, end: str) -> str:
+    """Where a date range of klines is cached. One definition, so the
+    downloader, the backtester and the sweep always agree on the file."""
+    return f"data/klines_{symbol}_{timeframe}_{start}_{end}.csv"
+
+
+def funding_cache_path(symbol: str, start: str, end: str) -> str:
+    return f"data/funding_{symbol}_{start}_{end}.csv"
+
+
 def fetch_historical_klines(settings: Settings, start_ms: int, end_ms: int,
                              cache_path: str | None = None) -> list[list]:
     """Fetch raw OHLCV rows [ts, o, h, l, c, v] from Binance REST, paginated.

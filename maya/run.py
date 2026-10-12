@@ -111,6 +111,20 @@ def _startup_reconciliation(settings: Settings) -> float:
     return settings.start_equity
 
 
+def _start_watchdog(settings: Settings, risk) -> "object | None":
+    """Halt new trades if a real feed goes silent (spec 7.3). Sim and backtest
+    replay history at full speed, so they have no wall clock to watch."""
+    if not settings.uses_real_data:
+        return None
+    from maya.data.watchdog import FeedWatchdog
+
+    return FeedWatchdog(
+        settings.timeframe,
+        on_stale=lambda gap: risk.check_kill_switch(int(time.time() * 1000),
+                                                    data_stale=True),
+    ).start()
+
+
 def _start_api(settings: Settings, nodes: TradingNodes, journal: TradeJournal,
                processed_fn) -> "object | None":
     """Start the Layer 7 monitoring API, if enabled.
@@ -163,8 +177,13 @@ def main() -> None:
 
     processed = 0
     api = _start_api(settings, nodes, journal, lambda: processed)
+    watchdog = _start_watchdog(settings, nodes.risk)
+    last_candle = None
     try:
         for candle in feed.candles():
+            last_candle = candle
+            if watchdog is not None:
+                watchdog.beat()
             graph.invoke({"candle": candle})
             processed += 1
             if nodes.risk.account.state.value == "halted":
@@ -174,6 +193,8 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
+        if watchdog is not None:
+            watchdog.stop()
         if monitor is not None:
             monitor.stop()
         if api is not None:
@@ -181,10 +202,12 @@ def main() -> None:
 
         # Flatten any open position at the last seen price (clean shutdown).
         if nodes.execution.has_position:
-            last_price = nodes.execution.position.entry_price
-            result = nodes.execution.force_close(last_price, 0)
-            if result:
-                journal.record(result, result.position.confluences)
+            from maya.execution.engine import flatten_on_shutdown
+
+            pos = nodes.execution.position
+            price = last_candle.close if last_candle is not None else pos.entry_price
+            flatten_on_shutdown(nodes.execution, nodes.risk, journal, price,
+                                int(time.time() * 1000))
 
         _report(nodes, journal, processed)
         journal.close()
@@ -214,7 +237,7 @@ def _report(nodes: TradingNodes, journal: TradeJournal, processed: int) -> None:
         logger.info("--- this run ---")
         logger.info("Trades            : {}", run["trades"])
         logger.info("Win rate          : {}%", run["win_rate"])
-        logger.info("Profit factor     : {}", run["profit_factor"])
+        logger.info("Profit factor     : {}", _pf(run["profit_factor"]))
         logger.info("Total PnL         : ${}", run["total_pnl_usdt"])
         logger.info("Expectancy/trade  : ${}", run["expectancy"])
         logger.info("Total fees        : ${}", run["total_fees"])
@@ -228,9 +251,13 @@ def _report(nodes: TradingNodes, journal: TradeJournal, processed: int) -> None:
                     older)
         logger.info("Trades            : {}", lifetime["trades"])
         logger.info("Win rate          : {}%", lifetime["win_rate"])
-        logger.info("Profit factor     : {}", lifetime["profit_factor"])
+        logger.info("Profit factor     : {}", _pf(lifetime["profit_factor"]))
         logger.info("Total PnL         : ${}", lifetime["total_pnl_usdt"])
     logger.info("------------------------------------------------------------")
+
+
+def _pf(value) -> str:
+    return "∞ (no losses)" if value is None else str(value)
 
 
 def _report_scan(risk, journal: TradeJournal) -> None:

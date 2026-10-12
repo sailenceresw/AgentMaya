@@ -45,10 +45,12 @@ class ScanAgent:
         self._last_managed_ts = 0
         self.last_scan: list[Candidate] = []   # read by the monitoring API
         self.steps = 0
+        self.got_data = False                  # did the last step read any candles?
 
     def step(self, now_ts: int) -> Candidate | None:
         """Advance one candle. Returns the candidate opened, if any."""
         self.steps += 1
+        self.got_data = False
         self.risk.check_kill_switch(now_ts)
         if self.execution.has_position:
             self._manage(now_ts)
@@ -58,6 +60,7 @@ class ScanAgent:
 
         results = self.scanner.scan(now_ts)
         self.last_scan = results
+        self.got_data = any(not c.rejected.startswith("no candles") for c in results)
         logger.info("scan:\n{}", format_table(results))
         best = self.scanner.review_best(results)
         if best is None:
@@ -79,6 +82,7 @@ class ScanAgent:
         except Exception as exc:  # noqa: BLE001 - the venue still holds the stop
             logger.warning("could not fetch candles for open {}: {}", pos.symbol, exc)
             return
+        self.got_data = bool(candles)
         for candle in candles:
             if candle.timestamp <= max(self._last_managed_ts, pos.opened_ts):
                 continue
@@ -140,9 +144,18 @@ def main() -> None:
     logger.info("=== Maya scanner === mode={} tf={} up to {} coins",
                 settings.mode.value, settings.timeframe, settings.scan_max_coins)
     tf_ms = timeframe_ms(settings.timeframe)
+    # The scanner polls on its own clock, so "data arrived" means a step that
+    # actually read candles for at least one coin.
+    from maya.data.watchdog import FeedWatchdog
+    watchdog = FeedWatchdog(
+        settings.timeframe,
+        on_stale=lambda gap: risk.check_kill_switch(int(time.time() * 1000),
+                                                    data_stale=True)).start()
     try:
         while True:
             agent.step(int(time.time() * 1000))
+            if agent.got_data:
+                watchdog.beat()
             if risk.account.state is SystemState.HALTED and not execution.has_position:
                 logger.critical("System HALTED ({}). Stopping.",
                                 ", ".join(risk.account.halt_reasons))
@@ -151,6 +164,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
+        watchdog.stop()
         if monitor is not None:
             monitor.stop()
         if api is not None:
@@ -158,11 +172,17 @@ def main() -> None:
         # Same clean-shutdown rule as the single-symbol agent: flatten, so a
         # restart never finds a venue position the fresh process doesn't know.
         if execution.has_position:
+            from maya.execution.engine import flatten_on_shutdown
+
             pos = execution.position
-            result = execution.force_close(pos.entry_price, int(time.time() * 1000))
-            if result:
-                journal.record(result, result.position.confluences)
-                risk.on_trade_closed(result.pnl_usdt, result.exit_ts)
+            price = pos.entry_price
+            try:   # best effort: the coin's latest close, for honest PnL
+                recent = agent.scanner.fetch_candles(pos.symbol, 1)
+                if recent:
+                    price = recent[-1].close
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("no closing price for {} ({}); booking at entry", pos.symbol, exc)
+            flatten_on_shutdown(execution, risk, journal, price, int(time.time() * 1000))
         _report_scan(risk, journal)
         journal.close()
 

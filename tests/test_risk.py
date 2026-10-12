@@ -381,3 +381,49 @@ def test_roi_gate_is_net_of_fees():
 def test_blank_fee_settings_mean_use_the_default():
     s = Settings(fee_maker_bps="", builder_fee_bps="  ", fee_rate="")
     assert s.fee_maker_bps is None and s.builder_fee_bps is None and s.fee_rate is None
+
+
+# -- cooldown is a timed penalty, not a permanent one ------------------------- #
+def _cooldown_rm():
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, min_roi_pct=10.0), 1000)
+    rm.roll_periods(0)
+    for _ in range(RiskLimits.MAX_CONSECUTIVE_LOSSES):
+        rm.on_trade_opened()
+        rm.on_trade_closed(-5, 0)
+    assert rm.account.state is SystemState.COOLDOWN
+    return rm
+
+
+def test_serving_the_cooldown_resets_the_loss_streak():
+    rm = _cooldown_rm()
+    after = rm.account.cooldown_until_ts + 1
+    assert rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), after).approved
+    assert rm.account.consecutive_losses == 0
+
+
+def test_one_loss_after_a_served_cooldown_does_not_retrigger_it():
+    rm = _cooldown_rm()
+    after = rm.account.cooldown_until_ts + 1
+    rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), after)
+    rm.on_trade_opened()
+    rm.on_trade_closed(-5, after + 1)
+    assert rm.account.state is SystemState.RUNNING
+
+
+def test_cooldown_still_blocks_until_it_expires():
+    rm = _cooldown_rm()
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5),
+                         rm.account.cooldown_until_ts - 1)
+    assert not decision.approved and decision.reason == "in cooldown"
+
+
+def test_missing_binance_sdk_is_named_not_blamed_on_ccxt(monkeypatch):
+    def missing(settings):
+        raise ModuleNotFoundError("No module named 'x'",
+                                  name="binance_sdk_derivatives_trading_usds_futures")
+
+    monkeypatch.setattr("maya.check_connection._build_exchange", missing)
+    report = run_diagnostics(Settings(mode=RunMode.PAPER))
+    assert not report.ok
+    assert "binance-sdk-derivatives-trading-usds-futures" in report.errors[0]
+    assert "ccxt" not in report.errors[0]

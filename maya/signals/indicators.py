@@ -119,13 +119,20 @@ def detect_absorption(candles: list[Candle], cluster_pct: float = 0.0015,
     def cluster(levels: list[tuple[float, float]], window: float):
         if len(levels) < min_wicks:
             return None
+        # The densest cluster wins (most wicks, then the heaviest volume), not
+        # the first one found: with two candidate levels, iteration order is
+        # just candle order, and the level price defended hardest is the one
+        # that matters.
+        best: tuple[int, float, float] | None = None   # (members, strength, level)
         for ref, _ in levels:
             members = [(p, s) for p, s in levels if abs(p - ref) <= window]
-            if len(members) >= min_wicks:
-                lvl = float(np.mean([p for p, _ in members]))
-                strength = float(min(1.0, np.mean([s for _, s in members]) / 3.0))
-                return lvl, strength
-        return None
+            if len(members) < min_wicks:
+                continue
+            lvl = float(np.mean([p for p, _ in members]))
+            strength = float(min(1.0, np.mean([s for _, s in members]) / 3.0))
+            if best is None or (len(members), strength) > best[:2]:
+                best = (len(members), strength, lvl)
+        return (best[2], best[1]) if best else None
 
     window = ref_price * cluster_pct
     bull = cluster(lower_levels, window)

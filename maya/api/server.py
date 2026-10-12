@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import math
 import secrets
 import socket
 import threading
@@ -45,6 +46,21 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for type check
     from maya.nodes import TradingNodes
 
 from maya.config import Settings
+
+
+def json_safe(value: Any) -> Any:
+    """Replace non-finite floats with None so the payload is valid JSON.
+
+    Python serialises inf/NaN as `Infinity`/`NaN`, which browsers and the
+    Android app reject outright; one such number anywhere in a snapshot made
+    the whole dashboard unreadable."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
 
 
 def build_snapshot(settings: Settings, nodes: "TradingNodes",
@@ -224,7 +240,8 @@ def _make_handler(server: MonitorServer):
             self.wfile.write(body)
 
         def _json(self, status: int, payload: dict[str, Any] | list[Any]) -> None:
-            self._send(status, json.dumps(payload).encode(), "application/json")
+            self._send(status, json.dumps(json_safe(payload), allow_nan=False).encode(),
+                       "application/json")
 
         def _authorized(self, query: dict[str, str]) -> bool:
             header = self.headers.get("Authorization", "")
@@ -399,7 +416,7 @@ function render(d, trades){
       <div class="kv"><span>Trades</span><span>${r.trades||0}</span></div>
       <div class="kv"><span>Win rate</span><span>${r.trades?r.win_rate+'%':'—'}</span></div>
       <div class="kv"><span>PnL</span><span>${r.trades?money(r.total_pnl_usdt):'—'}</span></div>
-      <div class="kv"><span>Profit factor</span><span>${r.trades?r.profit_factor:'—'}</span></div>
+      <div class="kv"><span>Profit factor</span><span>${!r.trades?'—':(r.profit_factor ?? '∞ (no losses)')}</span></div>
       <div class="kv"><span>Trades today</span><span>${a.trades_today}</span></div>
       <div class="kv"><span>Loss streak</span><span>${a.consecutive_losses}</span></div>
     </div></div>`;

@@ -218,7 +218,14 @@ class RiskManager:
         if acc.state is SystemState.COOLDOWN and now_ts < acc.cooldown_until_ts:
             return RiskDecision(False, "in cooldown")
         if acc.state is SystemState.COOLDOWN:
-            acc.state = SystemState.RUNNING  # cooldown elapsed
+            # Cooldown served. The streak that caused it is cleared with it:
+            # left in place, the very next loss (streak 3 >= 2) re-triggers a
+            # cooldown at once, so after two losses the system could only
+            # ever take one trade per cooldown — a permanent penalty, not a
+            # timed one.
+            acc.state = SystemState.RUNNING
+            acc.consecutive_losses = 0
+            logger.info("cooldown served — loss streak reset")
 
         if acc.open_positions >= RiskLimits.MAX_CONCURRENT_POSITIONS:
             return RiskDecision(False, "max concurrent positions")

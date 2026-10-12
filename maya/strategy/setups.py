@@ -74,8 +74,10 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
         tp1 = vp.poc
         tp2 = vp.vah
         if _rr(entry, sl, tp1) >= RR_MIN_VALUE_AREA_ABSORPTION:
+            # R:R to TP1: the engine exits the whole position there, so a
+            # TP2 figure here overstated the edge the risk gate approved.
             return TradeIntent(sig.symbol, "long", "value_area_absorption",
-                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp2), sig.timestamp)
+                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp1), sig.timestamp)
 
     if ab.side == "bearish" and at_value(vp.vah):
         entry = price
@@ -84,7 +86,7 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
         tp2 = vp.val
         if _rr(entry, sl, tp1) >= RR_MIN_VALUE_AREA_ABSORPTION:
             return TradeIntent(sig.symbol, "short", "value_area_absorption",
-                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp2), sig.timestamp)
+                               entry, sl, tp1, tp2, 0, [], _rr(entry, sl, tp1), sig.timestamp)
     return None
 
 
@@ -116,32 +118,55 @@ def liquidity_sweep_choch(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
     return None
 
 
+# Spec 6.2 Setup 3 limits.
+COMPRESSION_MAX_RANGE = 0.003      # range < 0.3% ...
+COMPRESSION_MAX_STOP = 0.005       # stop mid-range, max 0.5% from entry
+COMPRESSION_MIN_BODY = 0.5         # breakout candle body > 50% of its range
+COMPRESSION_TARGET_RANGES = 2.0    # measured move: range height x 2 minimum
+
+
 def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
-    """Setup 3 — trade the expansion out of a tight compression range."""
-    compressed = ctx.range_pct < 0.003
-    vol_expansion = sig.volume > 3.0 * sig.avg_volume
-    if not (compressed and vol_expansion):
+    """Setup 3 — trade the expansion out of a tight compression range.
+
+    Built to spec 6.2: a sub-0.3% range over the prior 30 candles, a volume
+    expansion (>3x average), a CVD push in the breakout direction, and a
+    close beyond the range with a body over half the candle. The stop is
+    mid-range and may be at most 0.5% from entry.
+
+    The spec's target ("range height x 2 *minimum*") and its 1:5 minimum R:R
+    conflict: with the stop at mid-range the risk is at least half the range,
+    so a 2x target caps R:R at 1:4 and the setup could never fire. Since 2x is
+    stated as a minimum, the target is extended to whichever is further — 2x
+    the range or 5x the risk — which honours both. That makes the target
+    further than a textbook measured move, so whether the setup earns its
+    keep is a question for the backtest, not for this function.
+    """
+    if sig.range_high is None or sig.range_low is None:
         return None
+    if sig.range_pct >= COMPRESSION_MAX_RANGE or sig.volume <= 3.0 * sig.avg_volume:
+        return None
+    candle_range = sig.high - sig.low
+    if candle_range <= 0 or abs(sig.price - sig.open) / candle_range <= COMPRESSION_MIN_BODY:
+        return None
+
     price = sig.price
-    rng = (ctx.swing_high_15m - ctx.swing_low_15m)
-    mid = (ctx.swing_high_15m + ctx.swing_low_15m) / 2
+    rng = sig.range_high - sig.range_low
+    mid = (sig.range_high + sig.range_low) / 2
 
-    if ctx.breakout_up and sig.cvd_1m > 0:
-        entry = price
-        sl = mid
-        tp1 = price + rng * 2
-        if _rr(entry, sl, tp1) >= RR_MIN_COMPRESSION_BREAKOUT:
-            return TradeIntent(sig.symbol, "long", "compression_breakout",
-                               entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
+    if price > sig.range_high and sig.cvd_1m > 0:
+        direction, sign = "long", 1
+    elif price < sig.range_low and sig.cvd_1m < 0:
+        direction, sign = "short", -1
+    else:
+        return None
 
-    if ctx.breakout_down and sig.cvd_1m < 0:
-        entry = price
-        sl = mid
-        tp1 = price - rng * 2
-        if _rr(entry, sl, tp1) >= RR_MIN_COMPRESSION_BREAKOUT:
-            return TradeIntent(sig.symbol, "short", "compression_breakout",
-                               entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
-    return None
+    risk = abs(price - mid)
+    if risk <= 0 or risk / price > COMPRESSION_MAX_STOP:
+        return None
+    reach = max(COMPRESSION_TARGET_RANGES * rng, RR_MIN_COMPRESSION_BREAKOUT * risk)
+    tp1 = price + sign * reach
+    return TradeIntent(sig.symbol, direction, "compression_breakout",
+                       price, mid, tp1, tp1, 0, [], _rr(price, mid, tp1), sig.timestamp)
 
 
 ALL_SETUPS = (value_area_absorption, liquidity_sweep_choch, compression_breakout)

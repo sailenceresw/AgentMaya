@@ -19,6 +19,8 @@ from maya.signals.models import HTFContext, SignalObject
 from maya.signals.timeframes import TimeframeAggregator, parse_timeframe
 
 WINDOW = 60  # candles retained for profile / phase calculations
+# Spec 6.2 Setup 3: "Range < 0.3% for 30+ candles".
+COMPRESSION_LOOKBACK = 30
 ATR_LENGTH = 14
 # Higher timeframes folded from the 1m stream for chart reading. 15m gives the
 # trend a 1m scalp is fighting or riding; 1h gives the structure that decides
@@ -68,8 +70,15 @@ class SignalProcessor:
 
         vols = np.array([c.volume for c in candles])
         avg_volume = float(vols.mean()) if len(vols) else candle.volume
-        closes = np.array([c.close for c in candles])
-        range_pct = float((closes.max() - closes.min()) / max(closes.mean(), 1e-9)) if len(closes) > 1 else 0.0
+        # Prior candles only — this one may be the breakout.
+        prior = candles[-COMPRESSION_LOOKBACK - 1:-1]
+        range_high = range_low = None
+        range_pct = 0.0
+        if len(prior) >= COMPRESSION_LOOKBACK:
+            range_high = max(c.high for c in prior)
+            range_low = min(c.low for c in prior)
+            mid = (range_high + range_low) / 2
+            range_pct = (range_high - range_low) / mid if mid else 0.0
 
         return SignalObject(
             timestamp=candle.timestamp,
@@ -88,6 +97,9 @@ class SignalProcessor:
             volume=candle.volume,
             avg_volume=avg_volume,
             range_pct=range_pct,
+            range_high=range_high,
+            range_low=range_low,
+            open=candle.open,
             htf=dict(self._htf),
             atr=atr_value,
             patterns=[m.name for m in matches],

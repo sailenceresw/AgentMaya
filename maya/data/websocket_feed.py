@@ -155,7 +155,7 @@ class WebSocketFeed:
     def candles(self) -> Iterator[Candle]:
         self.start()
         emitted = 0
-        limit = self.settings.max_candles or 10**9
+        limit = self.settings.candle_limit or 10**9
         # A closed kline should arrive roughly every tf_ms; if nothing shows
         # up for several timeframes plus slack, treat the connection as
         # stalled rather than hanging forever (spec 4.6 — circuit breaker on

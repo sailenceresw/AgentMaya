@@ -27,6 +27,20 @@ class StrategyEngine:
         self.lows: deque[float] = deque(maxlen=15)
         self.closes: deque[float] = deque(maxlen=30)
         self.llm = LLMFilter(settings)
+        self._setups = tuple(
+            s for s in setup_mod.ALL_SETUPS
+            if s is not setup_mod.compression_breakout or settings.compression_breakout_enabled)
+
+    def observe(self, sig: SignalObject) -> SetupContext:
+        """Record this bar in the rolling swing context and return the context
+        as it stood *before* the bar (so a sweep compares against prior swings).
+
+        Must run on every candle, position or not. The graph used to skip the
+        strategy while a trade was open, so these windows froze for the whole
+        hold and the first setups after the close were judged against swings
+        from before the entry.
+        """
+        return self._context(sig)
 
     def _context(self, sig: SignalObject) -> SetupContext:
         prev_high = max(self.highs) if self.highs else sig.high
@@ -52,11 +66,14 @@ class StrategyEngine:
             breakout_down=breakout_down,
         )
 
-    def evaluate(self, sig: SignalObject) -> TradeIntent | None:
-        ctx = self._context(sig)
+    def evaluate(self, sig: SignalObject, ctx: SetupContext | None = None) -> TradeIntent | None:
+        """Best intent on this bar, or None. Pass the ``ctx`` returned by
+        :meth:`observe` for this bar; without one, the bar is observed here."""
+        if ctx is None:
+            ctx = self.observe(sig)
 
         candidates: list[TradeIntent] = []
-        for setup in setup_mod.ALL_SETUPS:
+        for setup in self._setups:
             intent = setup(sig, ctx)
             if intent is not None:
                 candidates.append(intent)

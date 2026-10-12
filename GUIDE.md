@@ -8,7 +8,7 @@ with and which ones exist specifically so you *don't* need to touch them.
 
 ```bash
 pip install -r requirements.txt --break-system-packages   # or use a venv
-pytest -q                                                   # should show ~56 passed
+pytest -q                                                   # all should pass, in ~10s
 python -m maya                                              # sim mode, no keys needed
 MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya         # scripted demo trade
 ```

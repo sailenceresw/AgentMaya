@@ -280,7 +280,8 @@ public class MainActivity extends Activity {
                       + "\nWin rate      " + run.optDouble("win_rate", 0) + "%"
                       + "\nPnL (net)     " + money(run.optDouble("total_pnl_usdt", 0))
                       + "\nFees paid     " + money(run.optDouble("total_fees", 0))
-                      + "\nProfit factor " + run.opt("profit_factor")
+                      + "\nProfit factor " + (run.isNull("profit_factor")
+                              ? "∞ (no losses)" : run.opt("profit_factor"))
                       + "\nTrades today  " + acc.getInt("trades_today")
                       + "\nLoss streak   " + acc.getInt("consecutive_losses"));
 

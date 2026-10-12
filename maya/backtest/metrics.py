@@ -10,7 +10,7 @@ tick-by-tick equity curve.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -27,6 +27,8 @@ class BacktestMetrics:
     # Round-trip fees charged across all trades. PnL above is already net of
     # them; gross = total_pnl_usdt + total_fees.
     total_fees: float = 0.0
+    # (day_start_ms, equity) per processed day, oldest first — for charts.
+    equity_curve: list[tuple[int, float]] = field(default_factory=list)
 
     @property
     def gross_pnl_usdt(self) -> float:
@@ -106,4 +108,5 @@ def compute_metrics(daily_equity: dict[int, float], trade_rows: list,
         expectancy=round(total_pnl / n, 2) if n else 0.0,
         total_fees=round(sum((r["fees_usdt"] or 0.0) for r in trade_rows
                              if "fees_usdt" in r.keys()), 2),
+        equity_curve=[(d, daily_equity[d]) for d in days_sorted],
     )

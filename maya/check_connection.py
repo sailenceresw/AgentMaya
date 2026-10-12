@@ -215,8 +215,10 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
 
     try:
         ex = _build_exchange(settings)
-    except ImportError:
-        report.errors.append("ccxt is not installed — pip install -r requirements.txt")
+    except ImportError as exc:
+        report.errors.append(
+            f"Binance SDK missing ({exc.name}) — pip install -r requirements.txt "
+            "(needs binance-sdk-derivatives-trading-usds-futures)")
         report.ok = False
         return report
     except Exception as exc:  # noqa: BLE001

@@ -79,11 +79,9 @@ class CCXTBroker:
             self.ex.set_leverage(leverage, sym)
             self.ex.create_order(sym, "limit", side, qty, intent.entry_price,
                                  {"timeInForce": "GTC"})
-            # Stop-loss at the exchange (workingType MARK_PRICE) — spec 8.2.2
-            self.ex.create_order(sym, "STOP_MARKET", close_side, qty, None, {
-                "stopPrice": intent.stop_loss, "reduceOnly": True,
-                "closePosition": True, "workingType": "MARK_PRICE",
-            })
+            # Stop-loss at the exchange (workingType MARK_PRICE) — spec 8.2.2.
+            self.ex.create_order(sym, "STOP_MARKET", close_side, None, None,
+                                 _close_position_stop(intent.stop_loss))
             self.ex.create_order(sym, "limit", close_side, qty, intent.take_profit_1,
                                  {"reduceOnly": True})
             logger.info("[{}] orders placed for {} {}",
@@ -115,10 +113,8 @@ class CCXTBroker:
                 if o.get("type", "").upper() in ("STOP_MARKET", "STOP") and \
                         o.get("side") == close_side:
                     self.ex.cancel_order(o["id"], pos.symbol)
-            self.ex.create_order(pos.symbol, "STOP_MARKET", close_side, pos.quantity, None, {
-                "stopPrice": new_stop, "reduceOnly": True,
-                "closePosition": True, "workingType": "MARK_PRICE",
-            })
+            self.ex.create_order(pos.symbol, "STOP_MARKET", close_side, None, None,
+                                 _close_position_stop(new_stop))
             logger.info("[{}] stop moved to {:.2f} for {}",
                         self.settings.mode.value.upper(), new_stop, pos.symbol)
             return True
@@ -126,6 +122,18 @@ class CCXTBroker:
             logger.error("stop update failed — original stop may still be live "
                         "at the old price: {}", exc)
             return False
+
+
+def _close_position_stop(stop_price: float) -> dict:
+    """Params for a stop that closes the whole position at the mark price.
+
+    Binance rejects ``closePosition=true`` sent together with ``reduceOnly``
+    or a quantity (-1106 "parameter sent when not required"). Sending
+    ``reduceOnly`` here made every stop-loss placement fail, which left each
+    position with no exchange-side stop. ``closePosition`` is already
+    reduce-only by definition, so nothing is lost by omitting it.
+    """
+    return {"stopPrice": stop_price, "closePosition": True, "workingType": "MARK_PRICE"}
 
 
 def build_broker(settings: Settings) -> Broker:

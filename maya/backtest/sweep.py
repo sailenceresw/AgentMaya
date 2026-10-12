@@ -27,7 +27,11 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from maya.backtest.data_loader import fetch_historical_klines, historical_candles
+from maya.backtest.data_loader import (
+    fetch_historical_klines,
+    historical_candles,
+    klines_cache_path,
+)
 from maya.backtest.metrics import BacktestMetrics
 from maya.backtest.runner import run_backtest
 from maya.config import Settings, get_settings
@@ -62,7 +66,8 @@ def _ms(day: str) -> int:
 
 
 def sweep(base: Settings, symbols: list[str], timeframes: list[str],
-          start: str, end: str, loader=fetch_historical_klines) -> list[SweepRow]:
+          start: str, end: str, loader=fetch_historical_klines,
+          plot_dir: str | None = None) -> list[SweepRow]:
     rows = []
     for tf in timeframes:
         for symbol in symbols:
@@ -70,17 +75,33 @@ def sweep(base: Settings, symbols: list[str], timeframes: list[str],
                                                "mode": base.mode.SIM, "llm_enabled": False})
             try:
                 klines = loader(settings, _ms(start), _ms(end),
-                                cache_path=f"data/klines_{symbol}_{tf}_{start}_{end}.csv")
+                                cache_path=klines_cache_path(symbol, tf, start, end))
                 if not klines:
                     rows.append(SweepRow(symbol, tf, None, "no data"))
                     continue
                 metrics = run_backtest(settings, historical_candles(klines),
                                        total=len(klines), progress_every=0)
                 rows.append(SweepRow(symbol, tf, metrics))
+                if plot_dir and metrics.equity_curve:
+                    _plot(metrics, plot_dir, symbol, tf, start, end)
             except Exception as exc:  # noqa: BLE001 - one pair must not end the sweep
                 rows.append(SweepRow(symbol, tf, None, str(exc)[:60]))
             logger.info("{} {} done", symbol, tf)
     return rows
+
+
+def _plot(metrics: BacktestMetrics, plot_dir: str, symbol: str, tf: str,
+          start: str, end: str) -> None:
+    from pathlib import Path
+
+    from maya.backtest.plot import save_equity_plot
+
+    Path(plot_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        save_equity_plot(metrics, f"{plot_dir}/{symbol}_{tf}.png",
+                         title=f"{symbol} {tf} {start}→{end}")
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("no chart for {} {}: {}", symbol, tf, exc)
 
 
 def format_rows(rows: list[SweepRow]) -> str:
@@ -109,11 +130,14 @@ def main() -> None:
     p.add_argument("--timeframes", default="5m,15m,1h")
     p.add_argument("--start", default="2025-01-01")
     p.add_argument("--end", default="2025-12-31")
+    p.add_argument("--plot-dir", default=None,
+                   help="write an equity/drawdown PNG per pair here (needs matplotlib)")
     a = p.parse_args()
 
     base = get_settings()
     rows = sweep(base, [s.strip() for s in a.symbols.split(",") if s.strip()],
-                 [t.strip() for t in a.timeframes.split(",") if t.strip()], a.start, a.end)
+                 [t.strip() for t in a.timeframes.split(",") if t.strip()], a.start, a.end,
+                 plot_dir=a.plot_dir)
     print(f"\nvenue={base.venue.value}  fees: round trip "
           f"{base.effective_fee_rate * 2:.3%} (worst case)\n")
     print(format_rows(rows))
