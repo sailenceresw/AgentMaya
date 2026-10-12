@@ -669,3 +669,129 @@ def test_preflight_falls_back_to_auth_status_on_cli_without_doctor(settings, mon
     )
     assert not report.ok
     assert "auth status" in fake.command(1)
+
+
+# --------------------------------------------------------------------------- #
+# Guidance from MetaMask's "9 key tips for trading perps" (Sep 2026)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def dry_broker(settings, monkeypatch) -> MetaMaskPerpsBroker:
+    monkeypatch.setattr("maya.execution.metamask_broker.resolve_mm_binary", lambda: "mm.cmd")
+    live = settings.model_copy(update={"mode": RunMode.LIVE, "perps_dry_run": True})
+    return prime_market_cache(MetaMaskPerpsBroker(live))
+
+
+# Field names as `mm perps quote` returned them live (v6.0.0); the values are
+# illustrative for this short, not captured.
+REAL_QUOTE_SHORT = {
+    "venue": "hyperliquid", "symbol": "BTC", "side": "short", "orderType": "limit",
+    "entryPrice": "66800", "size": "0.034", "notional": "2271.20",
+    "estimatedFee": "0.3407", "estimatedLiquidationPrice": "80160", "feeRate": 0.00015,
+    "warnings": [],
+}
+
+
+def test_dry_run_validates_on_mainnet_and_never_signs(dry_broker, intent, monkeypatch):
+    fake = FakeMM({"ok": True, "data": REAL_DRY_RUN_OPEN}, {"ok": True, "data": REAL_QUOTE_SHORT})
+    install(monkeypatch, fake)
+
+    assert dry_broker.open_position(intent, 0.034, 5) is True
+    opened, quoted = fake.command(0), fake.command(1)
+    assert "perps open" in opened and "--dry-run" in opened and "--network mainnet" in opened
+    assert "--yes" not in opened and "--wallet-timeout" not in opened
+    assert "perps quote" in quoted and "--limit-px 66800" in quoted
+    assert len(fake.calls) == 2          # no modify: there is no position to protect
+    assert dry_broker.last_fill.price == pytest.approx(66800.0)
+
+
+def test_dry_run_refuses_when_the_venue_liquidates_before_the_stop(dry_broker, intent,
+                                                                   monkeypatch):
+    quote = dict(REAL_QUOTE_SHORT, estimatedLiquidationPrice="67000")   # stop is 67388
+    install(monkeypatch, FakeMM({"ok": True, "data": REAL_DRY_RUN_OPEN},
+                                {"ok": True, "data": quote}))
+    assert dry_broker.open_position(intent, 0.034, 5) is False
+
+
+def test_dry_run_reports_a_venue_rejection(dry_broker, intent, monkeypatch):
+    install(monkeypatch, FakeMM({"ok": False, "error": {"code": "ORDER_REJECTED",
+                                                        "message": "bad tick"}}))
+    assert dry_broker.open_position(intent, 0.034, 5) is False
+
+
+def test_dry_run_close_and_stop_moves_touch_nothing(dry_broker, position, monkeypatch):
+    fake = FakeMM()
+    install(monkeypatch, fake)
+    dry_broker.close_position(position, 63700.0, "take_profit")
+    assert dry_broker.update_stop(position, 66800.0) is True
+    assert fake.calls == []
+
+
+def test_dry_run_disables_the_venue_monitor(monkeypatch):
+    from maya.execution.monitor import PositionMonitor
+
+    s = Settings(mode=RunMode.LIVE, venue=Venue.HYPERLIQUID, perps_dry_run=True)
+    monitor = PositionMonitor(s, execution=None, journal=None, risk=None)
+    monitor.start()
+    assert monitor._thread is None
+
+
+def test_orders_below_ten_dollars_never_reach_the_venue(broker, intent, monkeypatch):
+    fake = FakeMM()
+    install(monkeypatch, fake)
+    assert broker.open_position(intent, 0.0001, 5) is False   # ~$6.68 notional
+    assert fake.calls == []
+
+
+def test_emergency_close_caps_slippage_too(broker, intent, monkeypatch):
+    fake = FakeMM({"ok": True, "data": V7_OPEN_FILLED},
+                  {"ok": False, "error": "trigger price invalid"},
+                  {"ok": True, "data": {}})
+    install(monkeypatch, fake)
+    broker.open_position(intent, 0.034, 5)
+    assert "perps close" in fake.command(2) and "--max-slippage-bps 50" in fake.command(2)
+
+
+def _healthy(overrides=None):
+    doctor = dict(REAL_DOCTOR_SIGNED_OUT, authenticated=True, initialized=True)
+    responses = [
+        {"ok": True, "data": doctor},
+        {"ok": True, "data": {"mode": "guard", "address": "0xAbC"}},
+        {"ok": True, "data": dict(REAL_BALANCE, totalBalance="500.0")},
+        {"ok": True, "data": [REAL_MARKET_BTC]},
+        {"ok": True, "data": REAL_POSITIONS_EMPTY},
+        {"ok": True, "data": REAL_ORDERS_EMPTY},
+    ]
+    for i, payload in (overrides or {}).items():
+        responses[i] = payload
+    return responses
+
+
+def test_preflight_refuses_a_different_wallet_than_pinned(settings, monkeypatch):
+    pinned = settings.model_copy(update={"mm_expected_address": "0xDEF"})
+    report, _ = _diagnose(pinned, monkeypatch, *_healthy())
+    assert not report.ok
+    assert any("sign-in method" in e for e in report.errors)
+
+
+def test_preflight_accepts_the_pinned_wallet_case_insensitively(settings, monkeypatch):
+    pinned = settings.model_copy(update={"mm_expected_address": "0xabc"})
+    report, _ = _diagnose(pinned, monkeypatch, *_healthy())
+    assert report.ok
+
+
+def test_preflight_suggests_pinning_when_unpinned(settings, monkeypatch):
+    report, _ = _diagnose(settings, monkeypatch, *_healthy())
+    assert any("MAYA_MM_EXPECTED_ADDRESS=0xAbC" in w for w in report.warnings)
+
+
+def test_preflight_reconciles_positions_across_all_dexes(settings, monkeypatch):
+    _, fake = _diagnose(settings, monkeypatch, *_healthy())
+    positions = [fake.command(i) for i in range(len(fake.calls))
+                 if "perps positions" in fake.command(i)]
+    assert positions and "--all-dexes" in positions[0]
+
+
+def test_empty_testnet_points_to_a_mainnet_dry_run(settings, monkeypatch):
+    report, _ = _diagnose(settings, monkeypatch,
+                          *_healthy({2: {"ok": True, "data": REAL_BALANCE}}))
+    assert any("MAYA_PERPS_DRY_RUN=true" in w for w in report.warnings)

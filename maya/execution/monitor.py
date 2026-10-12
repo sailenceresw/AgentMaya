@@ -51,6 +51,10 @@ class PositionMonitor:
     def start(self) -> None:
         if not self.settings.uses_real_orders:
             return  # nothing to poll in sim/paper — the candle loop is authoritative
+        if self.settings.uses_metamask and self.settings.perps_dry_run:
+            # Rehearsal positions exist only locally; the venue is flat by
+            # design, and polling it would "reconcile" every position shut.
+            return
         self._exchange = self._build_exchange()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="maya-position-monitor",

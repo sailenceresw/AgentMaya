@@ -126,24 +126,60 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
     # Trading mode, informational. Guard Mode can pause a deposit or
     # withdrawal for phone approval; Beast Mode never does. Order placement
     # itself happens on Hyperliquid and is not gated by either.
+    expected = settings.mm_expected_address.strip().lower()
     try:
-        mode = broker.trading_mode()
-        if mode:
-            logger.info("Wallet trading mode : {}", mode)
-            if mode.lower() == "beast" and broker.network == "mainnet":
-                report.warnings.append(
-                    "wallet is in Beast Mode on mainnet: outflows skip the Guard Mode "
-                    "approval and 24h limit. Run `mm wallet trading-mode set guard` "
-                    "unless that is deliberate.")
+        info = broker.wallet_info()
     except MMError as exc:
         logger.debug("could not read wallet trading mode: {}", exc)
+        info = {"mode": None, "address": None}
+    mode, address = info["mode"], info["address"]
+    if address:
+        logger.info("Agent wallet        : {}", address)
+    if mode:
+        logger.info("Wallet trading mode : {}", mode)
+        if mode.lower() == "beast" and broker.network == "mainnet":
+            report.warnings.append(
+                "wallet is in Beast Mode on mainnet: outflows skip the Guard Mode "
+                "approval and 24h limit. Run `mm wallet trading-mode set guard` "
+                "unless that is deliberate.")
+    # Google, email and MetaMask Mobile QR sign-ins each resolve to a different
+    # wallet, so signing in "the other way" silently points Maya at another
+    # account — usually an empty one, possibly one holding something else.
+    if expected:
+        if not address:
+            report.errors.append(
+                "MAYA_MM_EXPECTED_ADDRESS is set but the active wallet address could "
+                "not be read — refusing to trade from an unverified wallet")
+            report.ok = False
+            return report
+        if address.lower() != expected:
+            report.errors.append(
+                f"active agent wallet {address} is not MAYA_MM_EXPECTED_ADDRESS "
+                f"{settings.mm_expected_address}. Each sign-in method (Google, email, "
+                "Mobile QR) resolves to a different wallet — log out and sign in the "
+                "way you originally did.")
+            report.ok = False
+            return report
+    elif address:
+        report.warnings.append(
+            f"set MAYA_MM_EXPECTED_ADDRESS={address} to pin this wallet: a different "
+            "sign-in method would silently switch Maya to another wallet")
 
     # 3. Collateral. A zero balance is the single most common reason a first
     #    Hyperliquid order is rejected, so it is called out explicitly.
     try:
         report.usdt_balance = broker.fetch_collateral_usd()
         report.usdt_available = report.usdt_balance
-        if (report.usdt_balance or 0) <= 0:
+        if (report.usdt_balance or 0) <= 0 and settings.perps_dry_run:
+            logger.info("Collateral is 0 — fine for a dry run, which never submits")
+        elif (report.usdt_balance or 0) <= 0 and broker.network == "testnet":
+            report.warnings.append(
+                "Hyperliquid testnet collateral is 0, and per MetaMask testnet "
+                "\"can't currently be funded through Agent Wallet's funding path\". "
+                "To rehearse, run against mainnet with nothing signed: "
+                "MAYA_MODE=live MAYA_PERPS_DRY_RUN=true."
+            )
+        elif (report.usdt_balance or 0) <= 0:
             report.warnings.append(
                 "Hyperliquid collateral is 0 — the sub-account is empty on first "
                 f"use. Run `mm perps deposit --amount <USDC> --network {broker.network}` "
@@ -187,7 +223,9 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
     #    bot starting when the rest is healthy, but anything found is escalated
     #    by the caller in maya.run.
     try:
-        positions = broker.perps("positions")
+        # --all-dexes: reads default to the main DEX only, so a position left
+        # on a HIP-3 DEX would otherwise be invisible to this check.
+        positions = broker.perps("positions", "--all-dexes")
         for entry in as_list(positions, "positions"):
             if not isinstance(entry, dict):
                 continue

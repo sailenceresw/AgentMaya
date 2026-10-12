@@ -50,7 +50,7 @@ from typing import Any
 
 from loguru import logger
 
-from maya.config import Settings
+from maya.config import HYPERLIQUID_MIN_NOTIONAL_USD, Settings
 from maya.execution.models import Position
 from maya.strategy.models import TradeIntent
 
@@ -232,6 +232,8 @@ class MetaMaskPerpsBroker:
         # mainnet. Anything else has no business placing real orders.
         self.network = "testnet" if settings.mode.value == "testnet" else "mainnet"
         self.venue = settings.perps_venue
+        self.dry_run = settings.perps_dry_run
+        self.tag = self.network.upper() + (" DRY-RUN" if self.dry_run else "")
         self.timeout_s = settings.mm_timeout_s
         self._market_cache: dict[str, dict[str, Any]] = {}
         # Environment for the `mm` subprocess only; Maya's own env is untouched.
@@ -339,11 +341,16 @@ class MetaMaskPerpsBroker:
         """
         return self._run("doctor")
 
-    def trading_mode(self) -> str | None:
-        """The active server wallet's trading mode (``guard`` / ``beast``)."""
+    def wallet_info(self) -> dict[str, str | None]:
+        """The active server wallet's address and trading mode.
+
+        ``mm wallet trading-mode get`` returns ``{"mode": ..., "address": ...}``
+        (per the v7.1.0 source), so one call answers both."""
         data = self._run("wallet", "trading-mode", "get")
-        mode = pick(data, "tradingMode", "mode", "trading_mode", default=None)
-        return str(mode) if mode is not None else None
+        mode = pick(data, "mode", "tradingMode", default=None)
+        address = pick(data, "address", default=None)
+        return {"mode": str(mode) if mode is not None else None,
+                "address": str(address) if address is not None else None}
 
     def pulse(self, symbol: str) -> dict[str, Any]:
         """MetaMask Pulse: an AI-written summary of recent news and trends for
@@ -418,6 +425,12 @@ class MetaMaskPerpsBroker:
         # costs one call per symbol per process, not one per order).
         size = _format_size(qty, self.size_decimals_for(intent.symbol))
         self.check_leverage_supported(intent.symbol, leverage)
+        notional = float(size) * intent.entry_price
+        if notional < HYPERLIQUID_MIN_NOTIONAL_USD:
+            logger.error("[{}] {} order of ${:.2f} notional is below Hyperliquid's "
+                         "${:.0f} minimum — not sent", self.tag, sym, notional,
+                         HYPERLIQUID_MIN_NOTIONAL_USD)
+            return False
 
         open_args = [
             "open",
@@ -434,6 +447,9 @@ class MetaMaskPerpsBroker:
         else:
             open_args += ["--type", "market",
                           "--max-slippage-bps", str(int(self.settings.perps_max_slippage_bps))]
+
+        if self.dry_run:
+            return self._rehearse_open(intent, open_args, sym, side, size, leverage)
 
         try:
             result = self.perps(*open_args, "--yes", signing=True)
@@ -490,6 +506,47 @@ class MetaMaskPerpsBroker:
 
         logger.info("[{}] SL={:.2f} TP={:.2f} attached for {}",
                     self.network.upper(), intent.stop_loss, intent.take_profit_1, sym)
+        return True
+
+    def _rehearse_open(self, intent: TradeIntent, open_args: list[str], sym: str,
+                       side: str, size: str, leverage: int) -> bool:
+        """Dry-run entry: the venue validates and prices the order, nothing is
+        signed. ``mm perps open --dry-run`` returns ``{"status": "prepared",
+        "averagePrice", "filledSize"}`` (captured live); ``mm perps quote``
+        adds the venue's own liquidation estimate, which is checked against
+        the stop so the rehearsal also tests the risk layer's assumption."""
+        try:
+            prepared = self.perps(*open_args, "--dry-run")
+        except MMError as exc:
+            logger.error("[{}] venue would REJECT {} {} size={}: {}",
+                         self.tag, side, sym, size, exc)
+            return False
+
+        quote_args = ["quote", "--symbol", sym, "--side", side, "--size", size,
+                      "--leverage", str(int(leverage))]
+        if self.settings.perps_order_type == "limit":
+            quote_args += ["--type", "limit", "--limit-px", _format_price(intent.entry_price)]
+        try:
+            quote = self.perps(*quote_args)
+            liq = as_float(quote.get("estimatedLiquidationPrice"))
+            beyond = liq > 0 and ((side == "long" and liq >= intent.stop_loss)
+                                  or (side == "short" and liq <= intent.stop_loss))
+            if beyond:
+                logger.error("[{}] venue estimates liquidation at {:.2f}, before the stop "
+                             "at {:.2f} — a live run would be liquidated first",
+                             self.tag, liq, intent.stop_loss)
+                return False
+            logger.info("[{}] quote: notional={} fee={} liquidation={}", self.tag,
+                        quote.get("notional", "?"), quote.get("estimatedFee", "?"),
+                        quote.get("estimatedLiquidationPrice", "?"))
+        except MMError as exc:
+            logger.warning("[{}] quote unavailable for {}: {}", self.tag, sym, exc)
+
+        fill = _fill_from(prepared, "averagePrice", "filledSize")
+        self.last_fill = fill or Fill(price=intent.entry_price, size=float(size))
+        logger.info("[{}] WOULD OPEN {} {} size={} lev={}x at {:.2f} SL={:.2f} TP={:.2f} "
+                    "— nothing signed", self.tag, side, sym, size, leverage,
+                    self.last_fill.price, intent.stop_loss, intent.take_profit_1)
         return True
 
     def _await_entry(self, sym: str, order_id: Any, requested: float,
@@ -577,7 +634,12 @@ class MetaMaskPerpsBroker:
 
     def _emergency_close(self, sym: str) -> None:
         try:
-            self.perps("close", "--symbol", sym, "--yes", signing=True)
+            # The exit leg needs its slippage cap too — it is the one MetaMask
+            # warns is easiest to forget, and an emergency close is exactly
+            # when the book may be thin.
+            self.perps("close", "--symbol", sym,
+                       "--max-slippage-bps", str(int(self.settings.perps_max_slippage_bps)),
+                       "--yes", signing=True)
             logger.warning("[{}] unwound unprotected {} position", self.network.upper(), sym)
         except MMError as close_exc:
             logger.critical(
@@ -587,6 +649,12 @@ class MetaMaskPerpsBroker:
 
     def close_position(self, pos: Position, price: float, reason: str) -> None:
         sym = to_hl_symbol(pos.symbol)
+        if self.dry_run:
+            # No position exists on the venue, so `close --dry-run` has
+            # nothing to validate against.
+            logger.info("[{}] WOULD CLOSE {} @ {:.2f} ({}) pnl={:.2f}", self.tag, sym,
+                        price, reason, pos.pnl_at(price))
+            return
         try:
             self.perps("close", "--symbol", sym,
                         "--max-slippage-bps", str(int(self.settings.perps_max_slippage_bps)),
@@ -612,6 +680,9 @@ class MetaMaskPerpsBroker:
         no move at all.
         """
         sym = to_hl_symbol(pos.symbol)
+        if self.dry_run:
+            logger.info("[{}] WOULD MOVE stop to {:.2f} for {}", self.tag, new_stop, sym)
+            return True
         try:
             self.perps("modify", "--symbol", sym, "--sl", _format_price(new_stop), "--yes",
                        signing=True)

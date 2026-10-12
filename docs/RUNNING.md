@@ -111,6 +111,12 @@ mm init --wallet server-wallet --mode guard    # server-held keys + Guard policy
 mm wallet create --name maya-agent --trading-mode guard
 ```
 
+> **Rehearse on mainnet with a dry run, not on testnet.** MetaMask's perps
+> guide (Sep 2026) states that Hyperliquid's testnet "can't currently be
+> funded through Agent Wallet's funding path". The testnet funding steps
+> below are kept for reference, but they will not get you a funded testnet
+> account. Use `MAYA_PERPS_DRY_RUN=true` instead (see "Rehearsal mode").
+
 **Funding is a two-step process, and the first step is off-CLI.**
 `mm perps deposit` bridges USDC *from the wallet's on-chain balance* into the
 Hyperliquid sub-account — it cannot conjure funds. A newly created wallet
@@ -155,12 +161,54 @@ right: Guard risks stalled orders, Beast risks unreviewed ones. Decide
 deliberately rather than by default, and prefer Guard while on testnet where a
 stall costs nothing.
 
-Then:
+Then rehearse against mainnet. Nothing is signed or submitted:
 
 ```bash
-MAYA_MODE=testnet MAYA_VENUE=hyperliquid python -m maya.check_metamask
-MAYA_MODE=testnet MAYA_VENUE=hyperliquid python -m maya
+export MAYA_VENUE=hyperliquid MAYA_MODE=live MAYA_PERPS_DRY_RUN=true
+export MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK   # still required: the interlock stays on
+python -m maya.check_metamask    # prints your agent wallet address
+export MAYA_MM_EXPECTED_ADDRESS=0x...            # pin it (see below)
+python -m maya
 ```
+
+### Rehearsal mode (`MAYA_PERPS_DRY_RUN=true`)
+
+Every entry Maya decides on goes to the real venue as
+`mm perps open --dry-run` and `mm perps quote`. Hyperliquid validates and
+prices the order (size precision, leverage limit, the $10 minimum, tick
+size), but the order is never signed or submitted. Maya then tracks the
+position locally exactly as paper mode does, and the candle loop executes
+SL/TP. The venue position monitor is off, because the venue is flat by
+design. Logs read `[MAINNET DRY-RUN] WOULD OPEN ...` / `WOULD CLOSE ...`.
+
+The quote also gives a second opinion on the liquidation guard. If the
+venue's own `estimatedLiquidationPrice` falls before the stop, the rehearsal
+refuses the entry and logs it.
+
+What a dry run cannot test is the part after submission: fills, resting
+orders, the SL/TP `modify`, and real closes. Those still need a first small
+funded mainnet trade, watched by hand.
+
+The live interlock (`MAYA_LIVE_CONFIRM`) is deliberately still required with
+`MAYA_MODE=live`. A dry run that loses its `MAYA_PERPS_DRY_RUN` line through
+a config mistake must not quietly trade real money.
+
+### MetaMask's perps guidance, and how Maya applies it
+
+These come from MetaMask's "9 key tips for trading perps" (Agent Wallet
+early-access email, Sep 2026):
+
+| MetaMask's tip | In Maya |
+|---|---|
+| Fund first; orders below **$10 notional are rejected** | The broker refuses sub-$10 orders before calling the CLI |
+| Quote or dry-run before opening | `MAYA_PERPS_DRY_RUN=true` does both for every entry |
+| Say "limit" explicitly; no price means a market order | `MAYA_PERPS_ORDER_TYPE=limit` by default, always passed explicitly |
+| Cap slippage on **both** ends | `--max-slippage-bps` on market entries, normal closes, and the emergency close (the last was missing) |
+| SL/TP is a separate `modify` step, or the position stays naked | Attached right after a confirmed fill; unwound if the attach fails; resting entries cancelled |
+| **Only the deposit is checked** by Guard Mode; opening, modifying and closing positions are not, at any size | MetaMask applies no limit to Maya's order size. Maya's own hard limits (`RiskLimits`) and the liquidation guard are the only ones |
+| Sign in the same way every time: Google, email and Mobile QR each give a **different wallet** | `MAYA_MM_EXPECTED_ADDRESS` pins the wallet; the preflight refuses any other |
+| Scope HIP-3 DEXs on purpose; reads default to the main DEX | The startup check reads positions with `--all-dexes`, so nothing hides on a HIP-3 DEX |
+| Rehearse with quotes and dry runs, not testnet | See "Rehearsal mode" above |
 
 `check_metamask.py` is the Hyperliquid counterpart to `check_connection.py`:
 read-only, verifies the CLI is installed and authenticated, that the
@@ -369,6 +417,8 @@ venue hours. Testnet first.
 | `MAYA_MM_TELEMETRY` | `false` | `true` lets the CLI send analytics (can add long hangs) |
 | `MAYA_PERPS_LIMIT_FILL_TIMEOUT_S` | `15` | How long a resting limit entry may wait for a fill before it is cancelled |
 | `MAYA_PERPS_FILL_POLL_S` | `3` | Position poll interval while waiting |
+| `MAYA_PERPS_DRY_RUN` | `false` | Rehearsal: validate and quote every order on the venue, never sign or submit |
+| `MAYA_MM_EXPECTED_ADDRESS` | *(blank)* | Agent wallet Maya must trade from; any other refuses to start |
 | `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
 | `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |
 

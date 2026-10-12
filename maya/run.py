@@ -32,6 +32,10 @@ def _guard_live(settings: Settings) -> None:
             "'I_UNDERSTAND_THE_RISK'. Refusing to trade real money."
         )
         sys.exit(2)
+    if settings.uses_metamask and settings.perps_dry_run:
+        logger.warning("MAYA_PERPS_DRY_RUN: orders are validated and priced on Hyperliquid "
+                       "{} but NEVER signed or submitted; positions are tracked locally.",
+                       "mainnet" if settings.is_live else "testnet")
     if settings.uses_metamask:
         # The Hyperliquid path is self-custodial — there are no exchange API
         # keys to check here. The equivalent gate (an authenticated `mm`

@@ -21,6 +21,10 @@ class RunMode(str, Enum):
     LIVE = "live"        # REAL MONEY
 
 
+# Hyperliquid rejects orders below $10 notional (MetaMask Agent Wallet perps
+# guide, Sep 2026).
+HYPERLIQUID_MIN_NOTIONAL_USD = 10.0
+
 # Per-side fee rates. Binance USD-M taker is 5bps (conservative — maker is
 # 2bps). Hyperliquid quoted 0.00015 for a limit order via `mm perps quote`.
 BINANCE_FEE_RATE = 0.0005
@@ -136,6 +140,16 @@ class Settings(BaseSettings):
     # A limit entry can come back "resting" instead of "filled". Maya then
     # polls for the fill this long before cancelling the order, so an unfilled
     # entry is never left on the book without a stop. 0 cancels immediately.
+    # Rehearsal: validate every entry against the real venue with
+    # `mm perps open --dry-run` and `mm perps quote`, but never sign or submit.
+    # Positions are tracked locally like paper trading. MetaMask's own advice
+    # is to rehearse this way rather than on testnet, which "can't currently
+    # be funded through Agent Wallet's funding path".
+    perps_dry_run: bool = False
+    # Google, email and MetaMask Mobile QR sign-ins each resolve to a
+    # *different* wallet address, even for the same email. Set this to the
+    # address Maya should trade from and the preflight refuses any other.
+    mm_expected_address: str = ""
     perps_limit_fill_timeout_s: float = 15.0
     perps_fill_poll_s: float = 3.0
     # MetaMask Pulse (`mm pulse asset --hl-perps-market <coin>`): an
