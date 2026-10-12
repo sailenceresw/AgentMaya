@@ -40,6 +40,8 @@ maya/
   strategy/    # L3 three setups, confluence scoring, optional LLM veto
   risk/        # L4 hard limits, kill switch, position sizing
   execution/   # L5 paper, ccxt & MetaMask brokers, position management
+  fees.py      # per-venue fee model: maker/taker + MetaMask builder fee
+  scanner.py   # multi-coin scanner; scan_run.py trades its best pick
   journal/     # L6 SQLite trade journal + performance metrics
   timeframe.py # single source of truth for timeframe parsing
   graph.py     # LangGraph StateGraph wiring the layers
@@ -75,6 +77,26 @@ reason to stand down, not to size small.
 > condition was correct-signed with `|t| > 2` and unanimous. So `desk.confer()`
 > is deliberately **not** wired into the trading decision — it exists to make
 > the system's reasoning readable, which it does well.
+
+## Fees decide what is tradable
+
+Through the MetaMask Agent Wallet a Hyperliquid round trip costs up to
+**0.26%** of the position: exchange fees plus MetaMask's builder fee, on both
+legs. Fees scale with size just as profit does, so only a larger move per
+trade beats them. A 1m scalp aiming for 0.5% gives half its target to fees
+and needs a 70% win rate to break even. A 1h swing aiming for 6% gives up 4%.
+Every trade is now screened **net of fees** (net R:R ≥ 2.5, fees ≤ 20% of the
+target), and the real fee figures are read from `mm perps quote` at startup.
+See [the fee section](docs/RUNNING.md#fees-what-a-trade-really-costs-and-the-fee-gate).
+
+## Multi-coin scanner
+
+`python -m maya.scanner` reads every liquid Hyperliquid perp and runs each
+through the same strategy, the chart desk and the fee gate. It ranks what's
+left by net R:R after fees. `python -m maya.scan_run` trades the best
+candidate (one position at a time, every hard limit intact).
+`python -m maya.backtest.sweep` measures which coins and timeframes pay
+after fees **before** any money is committed.
 
 ## Order flow is real
 

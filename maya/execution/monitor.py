@@ -101,7 +101,9 @@ class PositionMonitor:
         if local_pos is None:
             return  # nothing to reconcile; cheap early-out, no API call
 
-        exchange_contracts = self._exchange_contracts()
+        # The position's own symbol, not the configured one: in scanner mode
+        # Maya can hold any coin it found.
+        exchange_contracts = self._exchange_contracts(local_pos.symbol)
         if exchange_contracts is None:
             return  # couldn't read the venue — never reconcile on a blind guess
         if exchange_contracts > 0:
@@ -110,10 +112,10 @@ class PositionMonitor:
         # Exchange shows flat but we still think we're in a position: the
         # SL or TP order filled. Find the real exit price/fee from the most
         # recent reduce-only fill rather than guessing.
-        exit_price, fees = self._last_fill(local_pos)
+        exit_price, fees, reason = self._last_fill(local_pos)
         now_ts = int(time.time() * 1000)
         result = self.execution.reconcile_external_close(
-            exit_price=exit_price, ts=now_ts, reason="exchange_fill", fees_usdt=fees,
+            exit_price=exit_price, ts=now_ts, reason=reason, fees_usdt=fees,
         )
         if result is None:
             return
@@ -136,7 +138,7 @@ class PositionMonitor:
         logger.info("Position monitor detected exchange fill: {} {} pnl={:.2f}",
                     result.position.setup_name, result.result, result.pnl_usdt)
 
-    def _exchange_contracts(self) -> float | None:
+    def _exchange_contracts(self, symbol: str) -> float | None:
         """Absolute position size the venue reports, or ``None`` if unreadable.
 
         ``None`` is deliberately distinct from ``0.0``: a failed read must not
@@ -147,7 +149,7 @@ class PositionMonitor:
             from maya.execution.metamask_broker import MMError, as_float, pick
 
             try:
-                entry = self.execution.broker.fetch_position(self.settings.symbol)
+                entry = self.execution.broker.fetch_position(symbol)
             except MMError as exc:
                 logger.warning("could not fetch Hyperliquid position: {}", exc)
                 return None
@@ -156,42 +158,61 @@ class PositionMonitor:
             return abs(as_float(pick(entry, "size", "szi", "sz", "contracts", default=0.0)))
 
         try:
-            positions = self._exchange.fetch_positions([self.settings.symbol])
+            positions = self._exchange.fetch_positions([symbol])
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not fetch positions for reconciliation: {}", exc)
             return None
         return sum(abs(float(p.get("contracts") or 0)) for p in positions)
 
-    def _last_fill(self, pos) -> tuple[float, float]:
-        """Best-effort real exit price/fees from recent fills; falls back to
-        the position's own stop/take-profit level if trade history isn't
-        available (still far better than silently defaulting to zero)."""
-        if self.settings.uses_metamask:
-            # Known gap: the `mm` CLI exposes no fills/trade-history command
-            # (perps has balance/positions/orders but nothing historical), so
-            # the true exit price and fee simply cannot be read back on this
-            # venue. Every Hyperliquid close is therefore journaled from the
-            # SL/TP estimate below. Journal PnL on this path is approximate —
-            # reconcile against the Hyperliquid UI before trusting the metrics.
-            logger.warning(
-                "Hyperliquid exit price is ESTIMATED from the SL/TP level — the CLI "
-                "exposes no fill history. Journaled PnL for {} is approximate.",
-                pos.symbol)
-            return pos.take_profit, pos.notional * 0.001
+    def _last_fill(self, pos) -> tuple[float, float | None, str]:
+        """Exit price, fees and exit reason for a fill the venue already made.
 
+        Real fill data where the venue exposes it (Binance). Otherwise an
+        estimate: whichever of the stop and the target the current mark is
+        nearer to. This used to return the take-profit unconditionally, which
+        journaled every stop-out as a winning trade — the journal then showed
+        profit the account never made. With no mark price at all, the stop
+        is assumed: an estimate that errs towards a loss is the safe one.
+        ``fees`` of ``None`` lets the engine charge its fee model for the
+        estimated exit.
+        """
+        if not self.settings.uses_metamask:
+            try:
+                trades = self._exchange.fetch_my_trades(pos.symbol, limit=5)
+                reduce_trades = [t for t in trades
+                                 if t.get("info", {}).get("reduceOnly") in (True, "true")]
+                if reduce_trades:
+                    last = reduce_trades[-1]
+                    price = float(last["price"])
+                    fee = float(last.get("fee", {}).get("cost") or 0.0)
+                    return price, fee, _reason_for(pos, price)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("could not fetch fill details, estimating exit: {}", exc)
+
+        # The `mm` CLI exposes no fill history, so on Hyperliquid this is
+        # always an estimate. Reconcile against the Hyperliquid UI.
+        mark = self._mark_price(pos.symbol)
+        if mark is None:
+            price, reason = pos.stop_loss, "stop_loss"
+        else:
+            reason = _reason_for(pos, mark)
+            price = pos.take_profit if reason == "take_profit" else pos.stop_loss
+        logger.warning("{} exit ESTIMATED as {} at {:.6g} (mark {}) — the venue gave no "
+                       "fill; verify in its UI", pos.symbol, reason, price,
+                       "unavailable" if mark is None else f"{mark:.6g}")
+        return price, None, reason
+
+    def _mark_price(self, symbol: str) -> float | None:
         try:
-            trades = self._exchange.fetch_my_trades(self.settings.symbol, limit=5)
-            reduce_trades = [t for t in trades if t.get("info", {}).get("reduceOnly") in (True, "true")]
-            if reduce_trades:
-                last = reduce_trades[-1]
-                price = float(last["price"])
-                fee = float(last.get("fee", {}).get("cost") or 0.0)
-                return price, fee
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("could not fetch fill details, estimating exit: {}", exc)
+            if self.settings.uses_metamask:
+                return self.execution.broker.mark_price(symbol)
+            return float(self._exchange.fetch_ticker(symbol)["last"])
+        except Exception as exc:  # noqa: BLE001 - an estimate must never crash the monitor
+            logger.warning("could not read a mark price for {}: {}", symbol, exc)
+            return None
 
-        # Fallback: assume whichever of SL/TP is nearer the last-known price
-        # direction — conservative guess, logged clearly as an estimate.
-        logger.warning("estimating exit price from SL/TP levels — verify against "
-                       "the exchange UI for {}", pos.symbol)
-        return pos.take_profit, pos.notional * 0.001  # FEE_RATE*2 fallback approximation
+
+def _reason_for(pos, price: float) -> str:
+    """Which planned exit ``price`` is closer to."""
+    return ("take_profit" if abs(price - pos.take_profit) < abs(price - pos.stop_loss)
+            else "stop_loss")

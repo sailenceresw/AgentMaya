@@ -41,6 +41,9 @@ class ConnectionReport:
     open_orders: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Fee figures read from the venue itself (Hyperliquid via `mm perps
+    # quote`): fee_maker_bps / fee_taker_bps / builder_fee_bps -> value.
+    fee_calibration: dict[str, float] = field(default_factory=dict)
 
 
 def _build_exchange(settings: Settings):

@@ -46,6 +46,17 @@ def _guard_live(settings: Settings) -> None:
         sys.exit(2)
 
 
+def _apply_fee_calibration(settings: Settings, quoted: dict[str, float]) -> None:
+    """Use the fees the venue quoted unless the user pinned their own.
+
+    Applied before any risk manager or engine exists, so the fee gate and
+    every PnL figure use the real numbers from the first candle."""
+    for key, value in quoted.items():
+        if getattr(settings, key) is None and settings.fee_rate is None:
+            setattr(settings, key, value)
+            logger.info("Fee model: {} = {:.2f}bps (from `mm perps quote`)", key, value)
+
+
 def _startup_reconciliation(settings: Settings) -> float:
     """Connectivity + state reconciliation gate (spec section 8.4) for any
     mode that talks to a real exchange. Returns the equity to seed the risk
@@ -65,6 +76,7 @@ def _startup_reconciliation(settings: Settings) -> float:
     report = run_diagnostics(settings)
     for w in report.warnings:
         logger.warning(w)
+    _apply_fee_calibration(settings, report.fee_calibration)
     if not report.ok:
         for e in report.errors:
             logger.critical(e)
@@ -218,6 +230,26 @@ def _report(nodes: TradingNodes, journal: TradeJournal, processed: int) -> None:
         logger.info("Win rate          : {}%", lifetime["win_rate"])
         logger.info("Profit factor     : {}", lifetime["profit_factor"])
         logger.info("Total PnL         : ${}", lifetime["total_pnl_usdt"])
+    logger.info("------------------------------------------------------------")
+
+
+def _report_scan(risk, journal: TradeJournal) -> None:
+    """Run summary for the scanner agent, fees broken out: the number that
+    says whether the trades paid for themselves."""
+    run = journal.metrics(session_only=True)
+    acc = risk.account
+    logger.info("------------------------------------------------------------")
+    logger.info("Final equity      : ${:.2f} (start ${:.2f})", acc.equity, acc.start_equity)
+    if run.get("trades", 0):
+        gross = run["total_pnl_usdt"] + run["total_fees"]
+        logger.info("Trades            : {} (win rate {}%)", run["trades"], run["win_rate"])
+        logger.info("PnL before fees   : ${:.2f}", gross)
+        logger.info("Fees paid         : ${}", run["total_fees"])
+        logger.info("PnL after fees    : ${}", run["total_pnl_usdt"])
+        if gross > 0:
+            logger.info("Fees took         : {:.0%} of gross profit", run["total_fees"] / gross)
+    else:
+        logger.info("No trades were taken in this run.")
     logger.info("------------------------------------------------------------")
 
 

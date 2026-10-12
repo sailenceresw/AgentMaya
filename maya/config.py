@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     # (`feeRate: 0.00015` from `mm perps quote`). Using the Binance number on
     # Hyperliquid overstates costs by ~3.3x on every trade.
     fee_rate: float | None = None
+    # Per-venue fee model (see maya/fees.py). Blank = venue defaults:
+    # Hyperliquid tier 0 maker 1.5 / taker 4.5bps plus MetaMask's builder fee,
+    # assumed at Hyperliquid's 10bps cap until `mm perps quote` reports the
+    # real figure; Binance VIP 0 maker 2 / taker 5bps, no builder fee.
+    fee_maker_bps: float | None = None
+    fee_taker_bps: float | None = None
+    builder_fee_bps: float | None = None
+    # Fee-aware entry gate. A trade must still pay after the round trip:
+    # net R:R = (target move - fees) / (stop move + fees) must reach this, and
+    # fees may take at most `max_fee_share` of the move to TP1.
+    min_net_rr: float = 2.5
+    max_fee_share: float = 0.20
     # Each `mm` call spawns Node and may wait on wallet signing/MFA, so this
     # is generous compared to a REST timeout. It must exceed
     # ``mm_wallet_timeout_s`` (validated below) so the CLI gives up on a
@@ -166,6 +178,17 @@ class Settings(BaseSettings):
     pulse_enabled: bool = False
     pulse_ttl_s: int = 900
 
+    # -- Multi-coin scanner (maya.scanner / maya.scan_run) ------------------ #
+    # Coins come from Hyperliquid's public market list, busiest first.
+    scan_max_coins: int = 15
+    scan_min_volume_usd: float = 20_000_000.0
+    # Closed candles replayed per coin to warm up CVD, swings and HTF context.
+    scan_lookback: int = 400
+    # Comma-separated pin (e.g. "BTC,ETH,SOL"), bypassing the volume filter.
+    scan_symbols: str = ""
+    # Let the chart desk (Atlas/Echo/Flow) veto a setup it leans against.
+    scan_desk_veto: bool = True
+
     # LLM veto layer
     llm_enabled: bool = False
     llm_model: str = "claude-sonnet-4-6"
@@ -204,6 +227,14 @@ class Settings(BaseSettings):
                 f"(RiskLimits.MAX_LEVERAGE)"
             )
         return v
+
+    @field_validator("fee_rate", "fee_maker_bps", "fee_taker_bps", "builder_fee_bps",
+                     mode="before")
+    @classmethod
+    def _blank_means_unset(cls, v):
+        """``MAYA_BUILDER_FEE_BPS=`` in a .env means "use the default", not a
+        crash on startup."""
+        return None if isinstance(v, str) and not v.strip() else v
 
     @field_validator("mm_wallet_timeout_s")
     @classmethod
@@ -276,11 +307,16 @@ class Settings(BaseSettings):
 
     @property
     def effective_fee_rate(self) -> float:
-        """Per-side fee rate to charge in PnL, resolved per venue when unset."""
+        """Average per-side cost of a worst-case round trip (fees + builder).
+
+        Kept for callers that think in one per-side number (the Monte Carlo
+        model). PnL itself is charged leg by leg — see :mod:`maya.fees`.
+        """
         if self.fee_rate is not None:
             return self.fee_rate
-        return (HYPERLIQUID_FEE_RATE if self.venue is Venue.HYPERLIQUID
-                else BINANCE_FEE_RATE)
+        from maya.fees import FeeModel
+
+        return FeeModel.for_settings(self).worst_round_trip(self.perps_order_type) / 2
 
     @property
     def min_size_trading(self) -> bool:

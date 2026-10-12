@@ -17,6 +17,7 @@ from maya.config import BINANCE_FEE_RATE, RiskLimits, Settings
 from maya.data.models import Candle
 from maya.execution.brokers import build_broker
 from maya.execution.models import Position
+from maya.fees import FeeModel
 from maya.risk.manager import RiskDecision
 from maya.strategy.models import TradeIntent
 
@@ -42,6 +43,10 @@ class ExecutionEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.fee_rate = settings.effective_fee_rate
+        self.fees = FeeModel.for_settings(settings)
+        # Entries on Binance are always limits; on Hyperliquid it is configured.
+        self.order_type = settings.perps_order_type if settings.uses_metamask or \
+            settings.venue.value == "hyperliquid" else "limit"
         self.broker = build_broker(settings)
         self.position: Position | None = None
         # Guards `position` against a race between the candle-driven graph
@@ -83,7 +88,7 @@ class ExecutionEngine:
         pos = self.position
         assert pos is not None
         gross = pos.pnl_at(exit_price)
-        fees = pos.notional * self.fee_rate * 2  # entry + exit
+        fees = self.fees.cost_usd(pos.notional, self.order_type, reason)
         pnl = gross - fees
         risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
         rr = (gross / risk) if risk else 0.0
@@ -163,7 +168,8 @@ class ExecutionEngine:
             if pos is None:
                 return None
             gross = pos.pnl_at(exit_price)
-            fees = fees_usdt if fees_usdt is not None else pos.notional * self.fee_rate * 2
+            fees = fees_usdt if fees_usdt is not None else \
+                self.fees.cost_usd(pos.notional, self.order_type, reason)
             pnl = gross - fees
             risk = abs(pos.entry_price - pos.stop_loss) * pos.quantity
             rr = (gross / risk) if risk else 0.0

@@ -437,11 +437,128 @@ venue hours. Testnet first.
 | `MAYA_PERPS_DRY_RUN` | `false` | Rehearsal: validate and quote every order on the venue, never sign or submit |
 | `MAYA_PERPS_MIN_SIZE` | `false` | Size every order at Hyperliquid's $10 minimum (~$10.50) |
 | `MAYA_MM_EXPECTED_ADDRESS` | *(blank)* | Agent wallet Maya must trade from; any other refuses to start |
+| `MAYA_FEE_MAKER_BPS` / `MAYA_FEE_TAKER_BPS` | venue tier 0 | Exchange fee per leg; read from `mm perps quote` when blank |
+| `MAYA_BUILDER_FEE_BPS` | `10` on Hyperliquid | MetaMask's builder fee per leg; read from `mm perps quote` when blank |
+| `MAYA_MIN_NET_RR` | `2.5` | Minimum R:R *after* the round trip |
+| `MAYA_MAX_FEE_SHARE` | `0.20` | Maximum share of the target move fees may take |
 | `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
 | `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |
 
 `MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
 requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.
+
+## Fees: what a trade really costs, and the fee gate
+
+Every trade pays twice, once in and once out. On the MetaMask path it pays
+two parties each time: Hyperliquid's exchange fee and MetaMask's **builder
+fee**, which the Agent Wallet attaches to every open, close and TP/SL order.
+Hyperliquid caps a perps builder fee at 0.1% (10bps). MetaMask's actual figure
+is set per wallet, and `mm perps quote` reports it as `builderFeeBips`.
+Maya reads it at startup (see "Fee calibration" below) and assumes the cap
+until then.
+
+| Venue | Entry (limit, maker) | Exit (stop/target, taker) | Round trip |
+|---|---|---|---|
+| Hyperliquid via MetaMask (builder fee at the cap) | 0.015% + 0.10% | 0.045% + 0.10% | **0.26%** |
+| Hyperliquid direct (no builder fee) | 0.015% | 0.045% | 0.06% |
+| Binance USD-M | 0.02% | 0.05% (stop) / 0.02% (TP) | 0.07% |
+
+Hyperliquid TP/SL orders are trigger-market orders, so every exit through
+them pays the taker rate. **Maya used to charge 0.015% per side on Hyperliquid
+(0.03% round trip): the maker rate alone, with no builder fee. That
+understated the true cost up to ~9x**, in the journal, in backtests, and in
+every R:R the risk layer approved.
+
+### Why trading smaller does not fix fees, and what does
+
+Fees are a percentage of the position, so they scale with size exactly as
+profit does. A $10 trade and a $10,000 trade lose the same *share* of their
+profit to fees. What decides that share is **how far price has to move to
+the target**, compared with the 0.26% round trip:
+
+| Trade style | Stop | Target | Gross R:R | Net R:R | Fees take | Break-even win rate |
+|---|---|---|---|---|---|---|
+| 1m scalp | 0.30% | 0.50% | 1.7 | 0.43 | 52% of the target | 70% |
+| 1m at Maya's minimum gates (20x) | 0.15% | 0.60% | 4.0 | 0.83 | 43% | 55% |
+| 5m swing | 0.50% | 2.0% | 4.0 | 2.29 | 13% | 30% |
+| 15m swing | 0.80% | 3.2% | 4.0 | 2.77 | 8% | 26% |
+| 1h swing | 1.5% | 6.0% | 4.0 | 3.26 | 4% | 23% |
+| Demo BTC short | 0.56% | 4.64% | 8.3 | 5.35 | 6% | 16% |
+
+The demo trade at minimum size ($10.69) wins $0.496 gross, pays $0.028 in
+fees and nets **$0.468**. A stop-out costs $0.088. Fees are not what makes
+that trade small; its size is. 1m scalping is where fees do the damage:
+the target is barely larger than the round trip.
+
+### The fee gate (risk layer, both venues)
+
+Every candidate is screened net of fees:
+
+- **ROI on margin** is computed on the move left *after* fees.
+- **Fees may take at most `MAYA_MAX_FEE_SHARE` (20%)** of the move to TP1.
+- **Net R:R ≥ `MAYA_MIN_NET_RR` (2.5)**, where net R:R =
+  (target − fees) / (stop + fees). That is a break-even win rate under ~29%.
+
+The gross `MIN_RR_FOR_ENTRY` (4.0) still applies on top. Expect the gate to
+refuse most 1m setups through MetaMask. That is the correct answer for
+those trades, not a bug. Move `MAYA_TIMEFRAME` to 15m or 1h, where targets
+are many times the round trip.
+
+### Fee calibration
+
+On the Hyperliquid venue the preflight quotes a minimum-size order twice
+(limit and market) and reads `feeRate` (your actual maker/taker rate at your
+volume tier) and `builderFeeBips` (MetaMask's real builder fee). These
+replace the defaults for the run, logged as `Fee model: ... (from mm perps
+quote)`. A quote that omits `builderFeeBips` leaves the 10bps cap assumed.
+Explicit `MAYA_FEE_MAKER_BPS` / `MAYA_FEE_TAKER_BPS` / `MAYA_BUILDER_FEE_BPS`
+always win over the quote.
+
+## The multi-coin scanner
+
+`maya.scanner` reads many charts instead of waiting on one. Each candle close:
+
+1. **Universe**: Hyperliquid's public market list (free, no key), filtered
+   to coins with ≥ `MAYA_SCAN_MIN_VOLUME_USD` 24h volume that support your
+   leverage, busiest `MAYA_SCAN_MAX_COINS` first. Live funding comes with it.
+2. **Strategy**: each coin's last `MAYA_SCAN_LOOKBACK` closed candles
+   (Binance public klines, which carry real taker-buy volume for CVD) run
+   through the **same** signal processor and strategy engine the agent
+   trades with.
+3. **Chart desk**: Atlas (zones, structure), Echo (patterns at those zones)
+   and Flow (CVD) confer. If the desk leans *against* a setup, it is vetoed
+   (`MAYA_SCAN_DESK_VETO`). The desk only ever removes trades; Maya's own
+   measurements found its verdict non-predictive on its own (see the README).
+4. **Fee gate**: the risk screen above, per coin.
+5. **Rank**: by net R:R after fees, then confluence. The LLM veto, if
+   enabled, reviews only the trade actually chosen.
+
+```bash
+# Look only: which coins have a setup right now, and do they pay after fees?
+MAYA_MODE=paper MAYA_VENUE=hyperliquid MAYA_TIMEFRAME=15m python -m maya.scanner
+
+# Trade the best one (paper first; one position at a time, all hard limits apply)
+MAYA_MODE=paper MAYA_VENUE=hyperliquid MAYA_TIMEFRAME=15m python -m maya.scan_run
+```
+
+Hyperliquid coins with no Binance USD-M contract are skipped (no real CVD
+for them). `kPEPE`-style names map to Binance's `1000PEPEUSDT`. Set
+`MAYA_SCAN_SYMBOLS=BTC,ETH,SOL` to pin a list.
+
+### Measure it before trusting it: the sweep
+
+```bash
+MAYA_VENUE=hyperliquid python -m maya.backtest.sweep \
+    --symbols BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT --timeframes 5m,15m,1h \
+    --start 2025-01-01 --end 2025-12-31
+```
+
+This runs the real backtester, fee gate included, for every coin ×
+timeframe pair. Each pair gets a row with gross profit, **fees paid**, net
+profit, the share of gross profit fees took, drawdown, and a verdict such
+as "fees ate it: profitable before fees, losing after". Scanning many pairs
+also means some will look good by luck. Trust a pair only if it holds up
+across several neighbours *and* on a later date range it was not chosen on.
 
 ## Session state across restarts
 

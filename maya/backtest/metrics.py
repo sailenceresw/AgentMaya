@@ -24,6 +24,19 @@ class BacktestMetrics:
     max_drawdown_pct: float
     sharpe_annualized: float
     expectancy: float
+    # Round-trip fees charged across all trades. PnL above is already net of
+    # them; gross = total_pnl_usdt + total_fees.
+    total_fees: float = 0.0
+
+    @property
+    def gross_pnl_usdt(self) -> float:
+        return round(self.total_pnl_usdt + self.total_fees, 2)
+
+    @property
+    def fee_share_of_gross(self) -> float | None:
+        """Fraction of the pre-fee profit the fees took (None if no gross profit)."""
+        gross = self.total_pnl_usdt + self.total_fees
+        return self.total_fees / gross if gross > 0 else None
 
     def passes_gate(self) -> dict[str, bool]:
         """Spec section 14.1 — the go/no-go criteria before paper trading."""
@@ -91,4 +104,6 @@ def compute_metrics(daily_equity: dict[int, float], trade_rows: list,
         max_drawdown_pct=round(_max_drawdown_pct(equity_series), 2),
         sharpe_annualized=round(_sharpe_annualized(daily_returns), 2),
         expectancy=round(total_pnl / n, 2) if n else 0.0,
+        total_fees=round(sum((r["fees_usdt"] or 0.0) for r in trade_rows
+                             if "fees_usdt" in r.keys()), 2),
     )

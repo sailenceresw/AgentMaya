@@ -53,7 +53,7 @@ def test_allows_minimum_roi():
     # 3% move x 20x = 60% on margin, clears the 40% threshold.
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
                               min_roi_pct=40.0, leverage=20), 1000)
-    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
     assert decision.approved
 
 
@@ -83,7 +83,7 @@ def test_margin_sizing_gives_margin_times_leverage():
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
                               sizing_mode="margin", margin_per_trade_usd=20.0,
                               min_roi_pct=40.0), 1000)
-    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
     assert decision.approved
     assert decision.leverage == 20
     assert abs(decision.position_notional - 400.0) < 1e-6  # $20 x 20x
@@ -104,10 +104,11 @@ def test_risk_sizing_mode_still_available():
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
                               sizing_mode="risk", risk_per_trade_usd=20.0,
                               min_roi_pct=40.0), 1000)
-    decision = rm.screen(_intent(rr=5.0, take_profit_1=103), now_ts=0)
-    # 1% stop, $20 risk -> $2000 notional: derived from the stop, not margin.
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
+    # 0.5% stop, $20 risk -> $4000 notional: derived from the stop, not margin.
+    # (A 0.5% stop so the prices really are ~5:1 after fees, as rr=5.0 claims.)
     assert decision.approved
-    assert abs(decision.position_notional - 2000.0) < 1e-6
+    assert abs(decision.position_notional - 4000.0) < 1e-6
 
 
 def test_leverage_above_hard_limit_is_rejected_not_clamped():
@@ -326,3 +327,57 @@ def test_liquidation_distance_estimate():
 
     assert liquidation_distance_frac(20, 0.0125) == pytest.approx(0.0375)
     assert liquidation_distance_frac(1, 0.0125) == pytest.approx(0.9875)
+
+
+# -- fee-aware gate ---------------------------------------------------------- #
+def _fee_rm(**kw):
+    from maya.config import Venue
+
+    return RiskManager(Settings(mode=RunMode.SIM, venue=Venue.HYPERLIQUID, start_equity=1000,
+                                leverage=20, min_roi_pct=10.0, **kw), 1000)
+
+
+def test_fee_gate_rejects_a_scalp_that_only_pays_the_fees():
+    """The classic 1m scalp: 0.3% stop, 0.5% target. Gross it is 1.7:1; after
+    Hyperliquid + MetaMask's builder fee (0.26% round trip) the win is 0.24%
+    and the loss 0.56% — it needs a 70% win rate just to break even."""
+    rm = _fee_rm()
+    intent = TradeIntent("BTCUSDT", "long", "value_area_absorption", entry_price=100,
+                         stop_loss=99.7, take_profit_1=100.5, take_profit_2=101,
+                         confluence_score=8, expected_rr=5.0)
+    decision = rm.screen(intent, now_ts=0)
+    assert not decision.approved
+    assert "fees" in decision.reason
+
+
+def test_fee_gate_passes_a_trade_with_room_for_the_round_trip():
+    rm = _fee_rm()
+    intent = TradeIntent("BTCUSDT", "long", "value_area_absorption", entry_price=100,
+                         stop_loss=99.5, take_profit_1=103, take_profit_2=104,
+                         confluence_score=8, expected_rr=6.0)
+    assert rm.screen(intent, now_ts=0).approved
+
+
+def test_fee_gate_uses_the_calibrated_builder_fee():
+    """With MetaMask's real builder fee below the cap, a marginal trade can
+    pass that the conservative default would refuse."""
+    intent = TradeIntent("BTCUSDT", "long", "value_area_absorption", entry_price=100,
+                         stop_loss=99.6, take_profit_1=101.6, take_profit_2=102,
+                         confluence_score=8, expected_rr=4.0)
+    assert not _fee_rm().screen(intent, now_ts=0).approved
+    assert _fee_rm(builder_fee_bps=0.0).screen(intent, now_ts=0).approved
+
+
+def test_roi_gate_is_net_of_fees():
+    # 0.6% move x 20 = 12% gross on margin, but only 6.8% after a 0.26% round trip.
+    rm = _fee_rm(max_fee_share=1.0, min_net_rr=0.0)
+    intent = TradeIntent("BTCUSDT", "long", "value_area_absorption", entry_price=100,
+                         stop_loss=99.9, take_profit_1=100.6, take_profit_2=101,
+                         confluence_score=8, expected_rr=6.0)
+    decision = rm.screen(intent, now_ts=0)
+    assert not decision.approved and "after fees" in decision.reason
+
+
+def test_blank_fee_settings_mean_use_the_default():
+    s = Settings(fee_maker_bps="", builder_fee_bps="  ", fee_rate="")
+    assert s.fee_maker_bps is None and s.builder_fee_bps is None and s.fee_rate is None

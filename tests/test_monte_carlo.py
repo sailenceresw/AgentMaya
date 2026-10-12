@@ -238,16 +238,23 @@ def test_costs_raise_the_breakeven_win_rate_above_the_frictionless_floor():
 
 
 def test_fee_rate_follows_the_venue():
-    """Hyperliquid quoted 0.00015 per side via `mm perps quote`; Binance USD-M
-    taker is 0.0005. Charging the Binance rate on Hyperliquid overstates cost
-    drag by more than 3x."""
-    from maya.config import BINANCE_FEE_RATE, HYPERLIQUID_FEE_RATE, RunMode, Settings, Venue
+    """Per-side average of the worst round trip, venue by venue.
+
+    Hyperliquid: limit entry (maker 1.5bps) + trigger-market exit (taker
+    4.5bps), plus MetaMask's builder fee on both legs (10bps cap until the
+    quote reports the real one) = 26bps round trip = 13bps per side. The old
+    figure, 1.5bps per side, was the maker rate alone and understated the cost
+    of a Hyperliquid trade through MetaMask about 9x.
+    Binance: limit entry (maker 2bps) + stop-market exit (taker 5bps) = 7bps.
+    """
+    from maya.config import RunMode, Settings, Venue
 
     hl = Settings(mode=RunMode.TESTNET, venue=Venue.HYPERLIQUID)
     bn = Settings(mode=RunMode.TESTNET, venue=Venue.BINANCE)
-    assert hl.effective_fee_rate == HYPERLIQUID_FEE_RATE
-    assert bn.effective_fee_rate == BINANCE_FEE_RATE
-    assert bn.effective_fee_rate > hl.effective_fee_rate * 3
+    assert hl.effective_fee_rate == pytest.approx(0.0013)
+    assert bn.effective_fee_rate == pytest.approx(0.00035)
+    assert Settings(venue=Venue.HYPERLIQUID, builder_fee_bps=0.0).effective_fee_rate \
+        == pytest.approx(0.0003)
     # An explicit override still wins over the venue default.
     assert Settings(venue=Venue.HYPERLIQUID, fee_rate=0.001).effective_fee_rate == 0.001
 

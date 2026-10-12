@@ -199,25 +199,29 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
     #    failure: it is informational, nothing downstream depends on it.
     hl_symbol = to_hl_symbol(settings.symbol)
     try:
-        markets = broker.perps("markets", "--symbol", hl_symbol)
-        for entry in as_list(markets, "markets"):
-            if not isinstance(entry, dict):
-                continue
-            name = str(pick(entry, "symbol", "coin", "name", default="")).upper()
-            if to_hl_symbol(name) != hl_symbol:
-                continue
-            price = as_float(pick(entry, "markPx", "markPrice", "price", "oraclePx",
-                                    default=0.0))
-            if price > 0:
-                report.last_price = price
-            break
-        if report.last_price is None:
+        # Through the broker's cache, so sizing the fee quote below does not
+        # fetch the same market metadata a second time.
+        entry = broker.market_meta(hl_symbol)
+        price = as_float(pick(entry, "markPx", "markPrice", "price", "oraclePx",
+                              default=0.0))
+        if price > 0:
+            report.last_price = price
+        else:
             report.warnings.append(
                 f"could not read a mark price for {hl_symbol} from `mm perps markets` "
                 "— confirm the symbol exists on this venue"
             )
     except MMError as exc:
         report.warnings.append(f"could not fetch market data for {hl_symbol}: {exc}")
+
+    # 4b. Fees, from MetaMask itself. `mm perps quote` reports the venue
+    #     rate at this wallet's tier (`feeRate`: maker for a limit quote,
+    #     taker for a market one) and MetaMask's builder fee
+    #     (`builderFeeBips`, in basis points). Best-effort: a miss leaves
+    #     the conservative defaults in place.
+    if report.last_price:
+        report.fee_calibration = _read_fees(broker, hl_symbol, report.last_price,
+                                            settings.leverage)
 
     # 5. Spec 8.4 reconciliation inputs. Best-effort: these must not stop the
     #    bot starting when the rest is healthy, but anything found is escalated
@@ -253,6 +257,37 @@ def run_diagnostics(settings: Settings | None = None) -> ConnectionReport:
         report.warnings.append(f"could not fetch open orders: {exc}")
 
     return report
+
+
+def _read_fees(broker: MetaMaskPerpsBroker, symbol: str, mark: float,
+               leverage: int) -> dict[str, float]:
+    """Maker, taker and builder fee in bps, as quoted for this wallet."""
+    from maya.config import HYPERLIQUID_MIN_NOTIONAL_USD, MIN_SIZE_HEADROOM
+    from maya.execution.metamask_broker import _format_price, _format_size_up
+
+    size = _format_size_up(HYPERLIQUID_MIN_NOTIONAL_USD * MIN_SIZE_HEADROOM / mark,
+                           broker.size_decimals_for(symbol))
+    base = ["quote", "--symbol", symbol, "--side", "long", "--size", size,
+            "--leverage", str(int(leverage))]
+    out: dict[str, float] = {}
+    for key, extra in (("fee_maker_bps", ["--type", "limit", "--limit-px", _format_price(mark)]),
+                       ("fee_taker_bps", ["--type", "market"])):
+        try:
+            quote = broker.perps(*base, *extra)
+        except MMError as exc:
+            logger.warning("fee quote ({}) unavailable: {}", key, exc)
+            continue
+        rate = quote.get("feeRate")
+        if rate is not None:
+            out[key] = as_float(rate) * 1e4
+        # Only an explicit figure lowers the builder-fee assumption; a quote
+        # without the field leaves the 10bps cap in place.
+        if quote.get("builderFeeBips") is not None:
+            out["builder_fee_bps"] = as_float(quote["builderFeeBips"])
+    if out:
+        logger.info("Fees quoted by MetaMask: {}", ", ".join(
+            f"{k.replace('_bps', '')}={v:.2f}bps" for k, v in sorted(out.items())))
+    return out
 
 
 def _print_report(report: ConnectionReport) -> None:

@@ -119,3 +119,36 @@ def test_position_monitor_leaves_position_open_while_exchange_still_shows_it():
 
     assert engine.position is not None  # still open — exchange agrees
     assert journal.metrics().get("trades", 0) == 0
+
+
+# -- exit estimation when the venue gives no fill (Hyperliquid) -------------- #
+def _hl_monitor(monkeypatch, mark):
+    from maya.config import Venue
+
+    settings = Settings(mode=RunMode.SIM, venue=Venue.HYPERLIQUID, start_equity=1000)
+    engine = ExecutionEngine(settings)
+    engine.open(_intent(), _Decision(), ts=0)
+    monitor = PositionMonitor(settings, engine, TradeJournal(db_path=":memory:"),
+                              RiskManager(settings, 1000))
+    monkeypatch.setattr(type(settings), "uses_metamask", property(lambda self: True))
+    monkeypatch.setattr(monitor, "_mark_price", lambda symbol: mark)
+    return monitor, engine
+
+
+def test_stop_out_is_journaled_as_a_loss_not_a_win(monkeypatch):
+    """Regression: the estimate returned the take-profit unconditionally, so a
+    stop-out on Hyperliquid was journaled as a winning trade."""
+    monitor, engine = _hl_monitor(monkeypatch, mark=95.3)   # stop 95, target 120
+    price, fees, reason = monitor._last_fill(engine.position)
+    assert (price, reason) == (95, "stop_loss")
+    assert fees is None   # the engine charges its fee model
+
+
+def test_target_fill_is_journaled_as_a_win(monkeypatch):
+    monitor, engine = _hl_monitor(monkeypatch, mark=119.0)
+    assert monitor._last_fill(engine.position)[2] == "take_profit"
+
+
+def test_no_mark_price_assumes_the_stop(monkeypatch):
+    monitor, engine = _hl_monitor(monkeypatch, mark=None)
+    assert monitor._last_fill(engine.position)[:3:2] == (95, "stop_loss")

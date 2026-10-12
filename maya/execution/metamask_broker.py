@@ -387,6 +387,16 @@ class MetaMaskPerpsBroker:
                 return entry
         raise MMError(f"{sym} not found in `mm perps markets` on {self.network}")
 
+    def mark_price(self, symbol: str) -> float | None:
+        """Current mark price, fetched fresh (not from the metadata cache)."""
+        sym = to_hl_symbol(symbol)
+        for entry in as_list(self.perps("markets", "--symbol", sym), "markets"):
+            if isinstance(entry, dict) and to_hl_symbol(
+                    str(pick(entry, "symbol", "coin", default=""))) == sym:
+                price = as_float(pick(entry, "markPrice", "markPx", default=0.0))
+                return price or None
+        return None
+
     def size_decimals_for(self, symbol: str) -> int:
         """Venue size precision, read from the venue rather than assumed.
 

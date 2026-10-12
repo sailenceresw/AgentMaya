@@ -25,6 +25,7 @@ from maya.risk.sizing import (
     notional_to_qty,
     stop_distance_frac,
 )
+from maya.fees import FeeModel, economics
 from maya.strategy.models import TradeIntent
 
 
@@ -70,6 +71,9 @@ class AccountState:
 class RiskManager:
     def __init__(self, settings: Settings, equity: float) -> None:
         self.settings = settings
+        self.fees = FeeModel.for_settings(settings)
+        self.order_type = (settings.perps_order_type
+                           if settings.venue.value == "hyperliquid" else "limit")
         self.account = AccountState(
             equity=equity, start_equity=equity,
             day_start_equity=equity, week_start_equity=equity,
@@ -221,17 +225,33 @@ class RiskManager:
         if acc.trades_today >= RiskLimits.MAX_TRADES_PER_DAY:
             return RiskDecision(False, "max trades per day")
         leverage = self.settings.leverage
-        # ROI is screened on *margin*, not on raw price movement. Comparing an
-        # unleveraged price move against a percentage target rejected every
-        # realistic 1m scalp — a 40% BTC move never happens intraday.
-        roi = intent.roi_on_margin_pct(leverage)
+        econ = economics(intent.entry_price, intent.stop_loss, intent.take_profit_1,
+                         self.fees, self.order_type)
+        # ROI is screened on *margin*, not on raw price movement, and on the
+        # move left over *after* the round trip: a target that only pays the
+        # venue and MetaMask is not a return.
+        roi = econ.net_win * leverage * 100
         if roi < self.settings.min_roi_pct:
             return RiskDecision(
                 False,
-                f"ROI {roi:.1f}% on margin ({intent.expected_roi_pct:.2f}% move "
-                f"x {leverage}x) < {self.settings.min_roi_pct:.1f}%")
+                f"ROI {roi:.1f}% on margin after fees ({intent.expected_roi_pct:.2f}% move "
+                f"- {econ.fees:.3%} fees, x {leverage}x) < {self.settings.min_roi_pct:.1f}%")
         if intent.expected_rr < RiskLimits.MIN_RR_FOR_ENTRY:
             return RiskDecision(False, f"R:R {intent.expected_rr:.1f} < {RiskLimits.MIN_RR_FOR_ENTRY}")
+
+        # The fee gate. Fees are a percentage of notional, so they scale with
+        # size exactly as profit does — a small target move is what makes them
+        # fatal, and no position size fixes it.
+        if econ.fee_share_of_target > self.settings.max_fee_share:
+            return RiskDecision(
+                False,
+                f"fees {econ.fees:.3%} would take {econ.fee_share_of_target:.0%} of the "
+                f"{econ.target_move:.2%} move to target (max {self.settings.max_fee_share:.0%})")
+        if econ.net_rr < self.settings.min_net_rr:
+            return RiskDecision(
+                False,
+                f"net R:R {econ.net_rr:.2f} after {econ.fees:.3%} fees < "
+                f"{self.settings.min_net_rr} (gross {intent.expected_rr:.1f})")
 
         # A stop beyond the liquidation price never fires: the venue closes
         # the position first and keeps the whole margin. Sizing caps the loss

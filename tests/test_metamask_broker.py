@@ -652,6 +652,8 @@ def test_preflight_healthy_path_warns_on_old_cli_and_beast_mode(monkeypatch):
         {"ok": True, "data": {"mode": "beast", "address": "0xabc"}},
         {"ok": True, "data": funded},
         {"ok": True, "data": [REAL_MARKET_BTC]},
+        {"ok": True, "data": {}},                # fee quotes: nothing reported
+        {"ok": True, "data": {}},
         {"ok": True, "data": REAL_POSITIONS_EMPTY},
         {"ok": True, "data": REAL_ORDERS_EMPTY},
     )
@@ -751,6 +753,14 @@ def test_emergency_close_caps_slippage_too(broker, intent, monkeypatch):
     assert "perps close" in fake.command(2) and "--max-slippage-bps 50" in fake.command(2)
 
 
+# `mm perps quote` fee fields, per the v7.1.0 source: feeRate is the venue
+# rate for the quoted order type; builderFeeBips is MetaMask's builder fee.
+QUOTE_LIMIT = {"venue": "hyperliquid", "symbol": "BTC", "orderType": "limit",
+               "feeRate": "0.00015", "builderFeeBips": 5, "estimatedFee": "0.0021"}
+QUOTE_MARKET = {"venue": "hyperliquid", "symbol": "BTC", "orderType": "market",
+                "feeRate": "0.00045", "builderFeeBips": 5, "estimatedFee": "0.0052"}
+
+
 def _healthy(overrides=None):
     doctor = dict(REAL_DOCTOR_SIGNED_OUT, authenticated=True, initialized=True)
     responses = [
@@ -758,6 +768,8 @@ def _healthy(overrides=None):
         {"ok": True, "data": {"mode": "guard", "address": "0xAbC"}},
         {"ok": True, "data": dict(REAL_BALANCE, totalBalance="500.0")},
         {"ok": True, "data": [REAL_MARKET_BTC]},
+        {"ok": True, "data": QUOTE_LIMIT},       # fee quote, maker
+        {"ok": True, "data": QUOTE_MARKET},      # fee quote, taker
         {"ok": True, "data": REAL_POSITIONS_EMPTY},
         {"ok": True, "data": REAL_ORDERS_EMPTY},
     ]
@@ -841,3 +853,34 @@ def test_risk_manager_sizes_at_the_venue_minimum():
 
 def test_min_size_only_applies_to_hyperliquid():
     assert not Settings(venue=Venue.BINANCE, perps_min_size=True).min_size_trading
+
+
+
+def test_preflight_reads_fees_from_metamask(settings, monkeypatch):
+    report, fake = _diagnose(settings, monkeypatch, *_healthy())
+    assert report.fee_calibration == pytest.approx(
+        {"fee_maker_bps": 1.5, "fee_taker_bps": 4.5, "builder_fee_bps": 5.0})
+    quotes = [fake.command(i) for i in range(len(fake.calls)) if "perps quote" in fake.command(i)]
+    assert "--type limit" in quotes[0] and "--type market" in quotes[1]
+    assert sum("perps markets" in fake.command(i) for i in range(len(fake.calls))) == 1
+
+
+def test_a_quote_without_builder_fee_keeps_the_conservative_cap(settings, monkeypatch):
+    no_builder = {k: v for k, v in QUOTE_LIMIT.items() if k != "builderFeeBips"}
+    report, _ = _diagnose(settings, monkeypatch,
+                          *_healthy({4: {"ok": True, "data": no_builder},
+                                     5: {"ok": True, "data": no_builder}}))
+    assert "builder_fee_bps" not in report.fee_calibration
+
+
+def test_quoted_fees_feed_the_fee_model_unless_pinned():
+    from maya.fees import FeeModel
+    from maya.run import _apply_fee_calibration
+
+    s = Settings(venue=Venue.HYPERLIQUID)
+    _apply_fee_calibration(s, {"builder_fee_bps": 5.0, "fee_taker_bps": 4.5})
+    assert FeeModel.for_settings(s).builder == pytest.approx(0.0005)
+
+    pinned = Settings(venue=Venue.HYPERLIQUID, builder_fee_bps=8.0)
+    _apply_fee_calibration(pinned, {"builder_fee_bps": 5.0})
+    assert pinned.builder_fee_bps == 8.0
