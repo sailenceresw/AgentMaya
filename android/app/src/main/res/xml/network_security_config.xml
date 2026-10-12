@@ -1,17 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The agent runs on your own machine and serves plain HTTP over the LAN, so
-  cleartext has to be permitted. It is scoped to private address ranges rather
-  than enabled globally: this app should never be able to send your API token
-  over cleartext to a public host.
+  cleartext has to be permitted. It is permitted for every host: a
+  network-security-config <domain> matches host *names*, not IP ranges, so an
+  entry like 192.168.0.0 only ever matched that one literal address and could
+  not scope this to private networks. (An earlier version listed such entries
+  and claimed it did.) Only enter your agent's LAN address in the app: the API
+  token travels unencrypted.
 -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">10.0.0.0</domain>
-        <domain includeSubdomains="true">172.16.0.0</domain>
-        <domain includeSubdomains="true">192.168.0.0</domain>
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">127.0.0.1</domain>
-    </domain-config>
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

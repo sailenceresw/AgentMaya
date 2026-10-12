@@ -4,11 +4,15 @@
   time: `setup` for entering the agent's address, `dashboard` for everything
   else. Keeping them in one Activity avoids navigation state to get wrong when
   the connection drops.
+
+  The cards hold empty `Rows` containers; MainActivity fills them with
+  label/value rows, trade rows and scan rows (the Figma "Android" components)
+  so values can be coloured individually instead of living in one text block.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0B0F14"
+    android:background="@color/canvas"
     android:fitsSystemWindows="true">
 
     <!-- ============================ SETUP ============================ -->
@@ -17,36 +21,39 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:visibility="gone"
-        android:padding="20dp">
+        android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingLeft="20dp"
+            android:paddingRight="20dp"
+            android:paddingTop="28dp"
+            android:paddingBottom="20dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Connect to Maya"
-                android:textColor="#E6EDF3"
-                android:textSize="24sp"
-                android:textStyle="bold"
-                android:paddingBottom="6dp" />
+                android:textColor="@color/text_primary"
+                android:textSize="28sp"
+                android:paddingBottom="8dp" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Enter the address of the machine running the agent. Both devices must be on the same network, and the agent must be started with MAYA_API_ENABLED=true and MAYA_API_HOST=0.0.0.0."
-                android:textColor="#8B9BB0"
-                android:textSize="14sp"
-                android:paddingBottom="20dp" />
+                android:text="Watch your trading agent from your phone. Both devices must be on the same Wi-Fi."
+                android:textColor="@color/text_secondary"
+                android:textSize="15sp"
+                android:paddingBottom="12dp" />
 
             <TextView style="@style/Label" android:text="Host (agent's LAN IP)" />
             <EditText
                 android:id="@+id/host"
                 style="@style/Input"
-                android:hint="192.168.1.20"
-                android:inputType="text"
+                android:hint="192.168.1.24"
+                android:inputType="textUri"
                 android:autofillHints="" />
 
             <TextView style="@style/Label" android:text="Port" />
@@ -57,30 +64,38 @@
                 android:inputType="number"
                 android:autofillHints="" />
 
-            <TextView style="@style/Label" android:text="API token (MAYA_API_TOKEN)" />
+            <TextView style="@style/Label" android:text="API token" />
             <EditText
                 android:id="@+id/token"
                 style="@style/Input"
-                android:hint="paste the token"
+                android:hint="MAYA_API_TOKEN"
                 android:inputType="textPassword"
                 android:autofillHints="" />
 
-            <Button
-                android:id="@+id/connect"
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="Connect"
-                android:textStyle="bold" />
+                android:layout_marginTop="14dp"
+                android:text="Start the agent with MAYA_API_ENABLED=true and MAYA_API_HOST=0.0.0.0. The token is MAYA_API_TOKEN from its .env."
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
 
             <TextView
                 android:id="@+id/setupError"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
-                android:textColor="#F85149"
+                android:textColor="@color/negative"
                 android:textSize="14sp"
                 android:visibility="gone" />
+
+            <Button
+                android:id="@+id/connect"
+                style="@style/PillButton"
+                android:layout_marginTop="28dp"
+                android:background="@drawable/btn_filled"
+                android:textColor="#FFFFFFFF"
+                android:text="Connect" />
         </LinearLayout>
     </ScrollView>
 
@@ -92,28 +107,51 @@
         android:orientation="vertical"
         android:visibility="gone">
 
+        <!-- Top app bar -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:padding="16dp">
+            android:paddingLeft="16dp"
+            android:paddingRight="4dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
 
-            <TextView
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Maya"
-                android:textColor="#E6EDF3"
-                android:textSize="20sp"
-                android:textStyle="bold" />
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Maya"
+                    android:textColor="@color/text_primary"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:id="@+id/configPill"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="connecting…"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:singleLine="true"
+                    android:ellipsize="end" />
+            </LinearLayout>
 
             <TextView
-                android:id="@+id/configPill"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#8B9BB0"
-                android:textSize="12sp" />
+                android:id="@+id/settings"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:gravity="center"
+                android:text="⚙"
+                android:textColor="@color/text_primary"
+                android:textSize="22sp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Connection settings" />
         </LinearLayout>
 
         <ScrollView
@@ -121,7 +159,8 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:paddingLeft="16dp"
-            android:paddingRight="16dp">
+            android:paddingRight="16dp"
+            android:clipToPadding="false">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -129,69 +168,87 @@
                 android:orientation="vertical">
 
                 <!-- Equity -->
-                <LinearLayout style="@style/Card">
+                <LinearLayout style="@style/Card" android:paddingBottom="14dp">
                     <TextView style="@style/CardTitle" android:text="EQUITY" />
-                    <TextView
-                        android:id="@+id/equity"
-                        android:layout_width="wrap_content"
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:textColor="#E6EDF3"
-                        android:textSize="34sp"
-                        android:textStyle="bold" />
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:id="@+id/equity"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:textColor="@color/text_primary"
+                            android:textSize="34sp"
+                            android:textStyle="bold"
+                            android:singleLine="true" />
+
+                        <!-- State badge: dot + RUNNING / COOLDOWN / HALTED -->
+                        <LinearLayout
+                            android:id="@+id/stateBadge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:background="@drawable/pill_raised"
+                            android:paddingLeft="10dp"
+                            android:paddingRight="12dp"
+                            android:paddingTop="5dp"
+                            android:paddingBottom="5dp">
+
+                            <View
+                                android:id="@+id/stateDot"
+                                android:layout_width="8dp"
+                                android:layout_height="8dp"
+                                android:layout_marginRight="6dp"
+                                android:background="@drawable/dot" />
+
+                            <TextView
+                                android:id="@+id/state"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:letterSpacing="0.05" />
+                        </LinearLayout>
+                    </LinearLayout>
+
                     <TextView
                         android:id="@+id/pnl"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:textSize="15sp"
                         android:textStyle="bold" />
+
                     <TextView
-                        android:id="@+id/state"
-                        android:layout_width="wrap_content"
+                        android:id="@+id/haltReasons"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:paddingLeft="10dp"
-                        android:paddingRight="10dp"
-                        android:paddingTop="3dp"
-                        android:paddingBottom="3dp"
+                        android:layout_marginTop="4dp"
+                        android:textColor="@color/negative"
                         android:textSize="13sp"
-                        android:textStyle="bold" />
+                        android:visibility="gone" />
                 </LinearLayout>
 
                 <!-- Position -->
                 <LinearLayout style="@style/Card">
                     <TextView style="@style/CardTitle" android:text="OPEN POSITION" />
-                    <TextView
-                        android:id="@+id/position"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textColor="#E6EDF3"
-                        android:textSize="14sp"
-                        android:lineSpacingExtra="4dp" />
+                    <LinearLayout android:id="@+id/position" style="@style/Rows" />
                 </LinearLayout>
 
                 <!-- Run stats -->
                 <LinearLayout style="@style/Card">
                     <TextView style="@style/CardTitle" android:text="THIS RUN" />
-                    <TextView
-                        android:id="@+id/stats"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textColor="#E6EDF3"
-                        android:textSize="14sp"
-                        android:lineSpacingExtra="4dp" />
+                    <LinearLayout android:id="@+id/stats" style="@style/Rows" />
                 </LinearLayout>
 
                 <!-- Trades -->
                 <LinearLayout style="@style/Card">
                     <TextView style="@style/CardTitle" android:text="RECENT TRADES" />
-                    <TextView
-                        android:id="@+id/trades"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textColor="#E6EDF3"
-                        android:textSize="13sp"
-                        android:lineSpacingExtra="4dp"
-                        android:fontFamily="monospace" />
+                    <LinearLayout android:id="@+id/trades" style="@style/Rows" />
                 </LinearLayout>
 
                 <!-- Scanner (only when the scanner agent is running) -->
@@ -201,41 +258,32 @@
                     android:visibility="gone">
                     <TextView style="@style/CardTitle" android:text="LAST SCAN" />
                     <TextView
-                        android:id="@+id/scan"
+                        android:id="@+id/scanNote"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:textColor="#E6EDF3"
+                        android:textColor="@color/text_hint"
                         android:textSize="12sp"
-                        android:lineSpacingExtra="4dp"
-                        android:fontFamily="monospace" />
+                        android:paddingBottom="4dp" />
+                    <LinearLayout android:id="@+id/scan" style="@style/Rows" />
                 </LinearLayout>
 
                 <Button
                     android:id="@+id/halt"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    style="@style/PillButton"
                     android:layout_marginTop="4dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="HALT TRADING"
-                    android:textColor="#F85149"
-                    android:textStyle="bold"
-                    android:textSize="16sp" />
+                    android:layout_marginBottom="8dp"
+                    android:background="@drawable/btn_danger_tonal"
+                    android:textColor="@color/negative"
+                    android:text="Halt trading" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Halting stops new trades. It does not close an open position — do that on the exchange."
-                    android:textColor="#8B9BB0"
+                    android:textColor="@color/text_secondary"
                     android:textSize="12sp"
-                    android:gravity="center"
-                    android:paddingBottom="10dp" />
-
-                <Button
-                    android:id="@+id/settings"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Connection settings"
-                    android:textSize="14sp" />
+                    android:paddingLeft="4dp"
+                    android:paddingRight="4dp" />
 
                 <TextView
                     android:id="@+id/footer"
@@ -244,7 +292,7 @@
                     android:paddingTop="12dp"
                     android:paddingBottom="20dp"
                     android:gravity="center"
-                    android:textColor="#8B9BB0"
+                    android:textColor="@color/text_hint"
                     android:textSize="12sp" />
             </LinearLayout>
         </ScrollView>

@@ -59,8 +59,10 @@ maya/
   backtest/        runner (same graph as live), sweep, metrics, plot, Monte Carlo, funding
   api/server.py    token-protected monitoring API + phone dashboard + halt switch
   check_connection.py / check_metamask.py   startup preflights (Binance / Hyperliquid)
-android/           phone monitor app for the API
+android/           Android phone monitor for the API (Java, no dependencies)
+ios/               iOS phone monitor (SwiftUI app package, iOS 17)
 tests/             one test module per area; regression tests name the bug they pin
+                   (test_app_contract.py pins the API fields both phone apps read)
 ```
 
 ## Rules that keep this system honest

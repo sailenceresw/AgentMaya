@@ -208,4 +208,5 @@ def test_dashboard_snapshot_includes_the_latest_scan_and_fees(setup_candles):
     snap = build_snapshot(settings, agent, journal, agent.steps)
     assert snap["scan"][0]["coin"] == "BTC" and snap["scan"][0]["status"] == "trade"
     assert snap["config"]["round_trip_fee_pct"] == pytest.approx(0.26)
+    assert snap["config"]["agent"] == "scanner"
     assert snap["position"]["symbol"] == "BTCUSDT"

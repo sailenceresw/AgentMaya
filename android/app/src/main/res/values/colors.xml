@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Maya colour tokens: the same values as the "Maya" variable collection
+     in the Figma file and ios/MayaMonitor.swiftpm/Theme.swift. -->
+<resources>
+    <color name="canvas">#0B0F14</color>
+    <color name="surface">#141B24</color>
+    <color name="raised">#1B2430</color>
+    <color name="border">#223041</color>
+    <color name="text_primary">#E6EDF3</color>
+    <color name="text_secondary">#8B9BB0</color>
+    <color name="text_hint">#5C6B7F</color>
+    <color name="positive">#3FB950</color>
+    <color name="negative">#F85149</color>
+    <color name="warning">#D29922</color>
+    <color name="accent">#2F81F7</color>
+    <!-- negative at 16% opacity: the tonal Halt button. -->
+    <color name="negative_tint">#29F85149</color>
+</resources>

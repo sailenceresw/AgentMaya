@@ -575,6 +575,49 @@ testnet/live it's re-seeded from the current exchange USDT balance at
 startup (see `_startup_reconciliation` in `maya/run.py`), which is accurate
 but doesn't independently cross-check the journal's PnL math against it.
 
+## Watching from your phone (iOS and Android)
+
+The agent can serve a small, token-protected monitoring API
+(`maya/api/server.py`) that two native phone apps — and a browser dashboard at
+`/` — read. They show equity and state, the open position with its stop and
+target, this run's net PnL and fees, recent trades and, for the scanner agent,
+the last scan. The only thing they can change is **Halt**, which stops new
+trades; there is no resume and no way to open a trade from a phone, by design.
+Halting does not close an open position.
+
+```bash
+# on the machine running the agent
+MAYA_API_ENABLED=true MAYA_API_HOST=0.0.0.0 \
+MAYA_API_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(24))") \
+python -m maya            # or python -m maya.scan_run
+```
+
+Then in the app enter that machine's LAN IP (e.g. `192.168.1.24`), port
+`8787` and the token. Both apps check the token when you press Connect.
+
+| App | Where | Build |
+|---|---|---|
+| iOS 17+ (SwiftUI) | `ios/MayaMonitor.swiftpm` | Open in Xcode 15+ or Swift Playgrounds 4.4+ — see `ios/README.md` |
+| Android 7+ | `android/` | `gradle :app:assembleDebug`, sideload the APK — see `android/README.md` |
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `MAYA_API_ENABLED` | `false` | Serve the API at all |
+| `MAYA_API_HOST` | `127.0.0.1` | `0.0.0.0` to reach it from a phone on the same network |
+| `MAYA_API_PORT` | `8787` | |
+| `MAYA_API_TOKEN` | *(blank)* | Required; the server refuses to start without one |
+
+The traffic is plain HTTP on your LAN: anyone on that network who has the
+token can read the account and halt it. Use a network you trust.
+
+**What is verified:** `tests/test_app_contract.py` reads the field lists from
+both apps' sources and checks them against snapshots from a real scripted
+trade and a real scanner run, so a renamed API field fails CI. The Android
+code is type-checked against Android API stubs. **Not verified here:** neither
+app has been compiled with its real SDK or run on a device in this repository's
+CI (there is no Xcode or Android SDK in it) — build it once yourself before
+relying on it.
+
 ## Position monitoring (testnet/live)
 
 The candle-driven graph only advances once per closed 1-minute candle, but

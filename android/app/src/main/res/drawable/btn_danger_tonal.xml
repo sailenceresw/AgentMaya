@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Halt: tonal (tinted) rather than solid red, so it reads as serious
+     without looking like the primary action on the screen. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40F85149">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/negative_tint" />
+            <corners android:radius="100dp" />
+        </shape>
+    </item>
+</ripple>

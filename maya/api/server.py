@@ -108,6 +108,8 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
             "sizing_mode": settings.sizing_mode,
             "margin_per_trade_usd": settings.margin_per_trade_usd,
             "risk_per_trade_usd": settings.risk_per_trade_usd,
+            # "scanner" when maya.scan_run is driving (any coin), else "single".
+            "agent": "scanner" if getattr(nodes, "last_scan", None) is not None else "single",
             # What one round trip costs, so the phone can judge any target.
             "round_trip_fee_pct": round(fees.worst_round_trip() * 100, 4),
             "min_net_rr": settings.min_net_rr,
@@ -382,7 +384,7 @@ async function api(path, opts={}){
 function render(d, trades){
   const a = d.account, p = d.position, c = d.config;
   document.getElementById('cfg').textContent =
-    `${c.mode} · ${c.venue} · ${c.symbol} ${c.timeframe} · ${c.leverage}x`;
+    `${c.mode} · ${c.venue} · ${c.agent === 'scanner' ? 'scanner' : c.symbol} ${c.timeframe} · ${c.leverage}x`;
   const cls = a.pnl_usdt > 0 ? 'up' : a.pnl_usdt < 0 ? 'down' : '';
   const sign = a.pnl_usdt > 0 ? '+' : '';
 
