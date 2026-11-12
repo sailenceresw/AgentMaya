@@ -208,7 +208,12 @@ class CCXTFeed:
 
 def build_feed(settings: Settings) -> CandleFeed:
     if settings.uses_real_data:
-        logger.info("Using CCXT feed (mode={})", settings.mode.value)
+        from maya.config import Venue
+        if settings.venue is Venue.HYPERLIQUID:
+            from maya.data.hyperliquid_feed import HyperliquidFeed
+            logger.info("Using Hyperliquid feed (mode={})", settings.mode.value)
+            return HyperliquidFeed(settings)
+        logger.info("Using CCXT/Binance feed (mode={})", settings.mode.value)
         return CCXTFeed(settings)
     if settings.scenario:
         from maya.data.scenarios import ScenarioFeed

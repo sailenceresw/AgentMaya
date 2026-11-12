@@ -153,5 +153,9 @@ class CCXTBroker:
 
 def build_broker(settings: Settings) -> Broker:
     if settings.uses_real_orders:
+        from maya.config import Venue
+        if settings.venue is Venue.HYPERLIQUID:
+            from maya.execution.hyperliquid_broker import HyperliquidBroker
+            return HyperliquidBroker(settings)
         return CCXTBroker(settings)
     return PaperBroker(settings)

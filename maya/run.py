@@ -26,20 +26,61 @@ def _configure_logging(settings: Settings) -> None:
 
 
 def _guard_live(settings: Settings) -> None:
-    """Refuse live trading unless the explicit interlock is set (spec section 7)."""
+    """Refuse live trading unless the explicit interlock + credentials are set."""
+    from maya.config import Venue
+
     if settings.mode is RunMode.LIVE and settings.live_confirm != "I_UNDERSTAND_THE_RISK":
         logger.critical(
             "LIVE mode requested but MAYA_LIVE_CONFIRM is not set to "
             "'I_UNDERSTAND_THE_RISK'. Refusing to trade real money."
         )
         sys.exit(2)
-    if settings.uses_real_orders and not (settings.binance_api_key and settings.binance_api_secret):
+    if not settings.uses_real_orders:
+        return
+    if settings.venue is Venue.HYPERLIQUID:
+        if not settings.hyperliquid_agent_key:
+            logger.critical("Mode {} on Hyperliquid needs HYPERLIQUID_AGENT_KEY "
+                            "(and HYPERLIQUID_ACCOUNT_ADDRESS). Aborting.", settings.mode.value)
+            sys.exit(2)
+    elif not (settings.binance_api_key and settings.binance_api_secret):
         logger.critical("Mode {} needs BINANCE_API_KEY/SECRET. Aborting.", settings.mode.value)
         sys.exit(2)
 
 
 def check_connection(settings: Settings) -> int:
-    """Verify connectivity to the Binance API and print a report. Returns exit code."""
+    """Verify connectivity to the configured venue and print a report."""
+    from maya.config import Venue
+    if settings.venue is Venue.HYPERLIQUID:
+        return _check_hyperliquid(settings)
+    return _check_binance(settings)
+
+
+def _check_hyperliquid(settings: Settings) -> int:
+    from maya.data.hyperliquid_client import connectivity_check
+
+    net = "MAINNET" if settings.mode is RunMode.LIVE else "TESTNET"
+    logger.info("Checking Hyperliquid connectivity ({}, coin={}) ...", net, settings.coin)
+    res = connectivity_check(settings)
+    if not res.ok:
+        logger.error("Hyperliquid connection FAILED: {}", res.detail)
+        logger.error("Could not reach Hyperliquid. Common causes:")
+        logger.error("  1. Restricted egress — allow api.hyperliquid.xyz / "
+                     "api.hyperliquid-testnet.xyz, or run on a host with access.")
+        logger.error("  2. SDK not installed — pip install hyperliquid-python-sdk")
+        return 1
+    logger.info("Hyperliquid reachable — {}", res.detail)
+    if res.last_price is not None:
+        logger.info("Last {} mid price: {}", settings.coin, res.last_price)
+    if res.authenticated:
+        logger.info("Account {}… equity: {} USDC", settings.hyperliquid_account_address[:10],
+                    res.equity_usdt)
+    else:
+        logger.info("No account address set — public data only. Set "
+                    "HYPERLIQUID_ACCOUNT_ADDRESS to check your balance.")
+    return 0
+
+
+def _check_binance(settings: Settings) -> int:
     from maya.data.binance_client import connectivity_check, to_ccxt_symbol
 
     logger.info("Checking Binance connectivity (mode={}, symbol={} -> {}) ...",

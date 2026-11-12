@@ -17,8 +17,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class RunMode(str, Enum):
     SIM = "sim"          # synthetic data, simulated execution, no keys
     PAPER = "paper"      # real market data, simulated execution
-    TESTNET = "testnet"  # Binance futures testnet (fake money, real sandbox)
+    TESTNET = "testnet"  # exchange testnet (fake money, real sandbox)
     LIVE = "live"        # REAL MONEY
+
+
+class Venue(str, Enum):
+    HYPERLIQUID = "hyperliquid"  # on-chain perps, wallet + agent key (default)
+    BINANCE = "binance"          # Binance USD-M futures (API key)
 
 
 class Settings(BaseSettings):
@@ -31,6 +36,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    venue: Venue = Venue.HYPERLIQUID
     mode: RunMode = RunMode.SIM
     symbol: str = "BTCUSDT"
     timeframe: str = "1m"
@@ -62,6 +68,24 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
     telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", validation_alias="TELEGRAM_CHAT_ID")
+
+    # Hyperliquid: your MAIN wallet address (public) and an AGENT/API wallet
+    # private key that signs orders but cannot withdraw. Approve the agent once
+    # from your main wallet (UI or approve_agent) — never put your main seed /
+    # withdrawal key here.
+    hyperliquid_account_address: str = Field(
+        default="", validation_alias="HYPERLIQUID_ACCOUNT_ADDRESS")
+    hyperliquid_agent_key: str = Field(
+        default="", validation_alias="HYPERLIQUID_AGENT_KEY")
+
+    @property
+    def coin(self) -> str:
+        """Hyperliquid coin name (e.g. 'BTC') derived from `symbol`."""
+        s = self.symbol.upper().replace("-", "").replace("_", "").replace("/", "")
+        for q in ("USDT", "USDC", "USD"):
+            if s.endswith(q) and len(s) > len(q):
+                return s[: -len(q)]
+        return s
 
     @property
     def is_live(self) -> bool:

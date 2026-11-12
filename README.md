@@ -1,41 +1,47 @@
 # AgentMaya
 
-Autonomous AI trading agent for Binance USD-M Perpetual Futures — 1-minute order-flow scalping using a Fabervaale-style methodology (CVD, Volume Profile, absorption patterns) with strict, hard-coded risk management.
+Autonomous AI trading agent for **perpetual futures** — 1-minute order-flow
+scalping (CVD, Volume Profile, absorption patterns) with strict, hard-coded risk
+management. Trades on **Hyperliquid** (on-chain perps, default) via your wallet
+and an agent key, or on **Binance USD-M Futures**.
 
 ## Documentation
 
-- [**Architecture & Technical Specification**](docs/MAYA_TRADING_SYSTEM_SPEC.md) — the full design blueprint covering all seven system layers (data ingestion, signal processing, strategy engine, risk management, execution, learning/analytics, and monitoring), technology stack, development phases, cost estimates, security requirements, and go/no-go gates.
-- [**Running the agent**](docs/RUNNING.md) — install, run modes, the demo scenario, and the LangGraph wiring.
+- [**Trading on Hyperliquid with your wallet**](docs/HYPERLIQUID.md) — agent-wallet setup, funding, and running (start here for on-chain perps).
+- [**Architecture & Technical Specification**](docs/MAYA_TRADING_SYSTEM_SPEC.md) — the full design blueprint covering all seven system layers, technology stack, development phases, security requirements, and go/no-go gates.
+- [**Running the agent**](docs/RUNNING.md) — install, run modes, backtesting, Telegram control, and the LangGraph wiring.
 
 ## Quick start
 
 ```bash
 python -m pip install -r requirements.txt
 
-# Run the full agent in simulation mode (no API keys, no real orders):
+# Run the full agent in simulation mode (no keys, no real orders):
 python -m maya
 
 # Watch a trade flow through every layer via a scripted setup:
 MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya
 
-# Verify the Binance API connection (needs network access to Binance):
-MAYA_MODE=paper python -m maya --check
+# Verify the venue connection (Hyperliquid by default):
+MAYA_MODE=testnet python -m maya --check
 
-# Backtest the strategy (offline demo; or --source csv/ccxt for real data):
+# Backtest the strategy (offline demo; or --source csv for real data):
 python -m maya.backtest --source demo --days 250
 
 # Tests:
 python -m pytest -q
 ```
 
-### Connecting to Binance
+### Venues
 
-The agent uses `ccxt` to reach **Binance USD-M Futures** (symbols auto-convert
-to ccxt's `BTC/USDT:USDT` form). Run `python -m maya --check` to verify
-connectivity and credentials before trading. Modes: `paper` (real data,
-simulated orders), `testnet` (sandbox orders), `live` (real money, gated behind
-an interlock). See [`docs/RUNNING.md`](docs/RUNNING.md#connecting-to-binance)
-for keys, permissions, and network/region requirements.
+- **Hyperliquid (default, `MAYA_VENUE=hyperliquid`)** — on-chain perps. You
+  trade from your wallet; the bot signs with an **agent key that cannot
+  withdraw**. See [`docs/HYPERLIQUID.md`](docs/HYPERLIQUID.md).
+- **Binance (`MAYA_VENUE=binance`)** — Binance USD-M Futures via `ccxt`/API key.
+  See [`docs/RUNNING.md`](docs/RUNNING.md#connecting-to-binance).
+
+Both expose the same modes: `sim` (synthetic), `paper` (real data, simulated
+orders), `testnet` (sandbox), `live` (real money, gated behind an interlock).
 
 ## Implementation
 
