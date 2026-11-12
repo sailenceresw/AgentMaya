@@ -44,6 +44,9 @@ class FakeExchange:
     def set_margin_mode(self, mode, symbol):
         self.margin_mode = mode
 
+    def cancel_all_orders(self, symbol):
+        self.cancelled = True
+
     def create_order(self, symbol, type_, side, amount, price=None, params=None):
         self.orders.append({
             "symbol": symbol, "type": type_, "side": side,
@@ -85,15 +88,32 @@ def test_ccxt_broker_places_entry_sl_tp(monkeypatch):
     assert fake.leverage == 5
     assert fake.margin_mode == "ISOLATED"
     types = [o["type"] for o in fake.orders]
-    assert types == ["limit", "STOP_MARKET", "limit"]   # entry, SL, TP
+    # Distinct TP2 (120 -> 125) scales out: entry, SL, TP1 (50%), TP2 (25%).
+    assert types == ["limit", "STOP_MARKET", "limit", "limit"]
 
-    entry, sl, tp = fake.orders
+    entry, sl, tp1, tp2 = fake.orders
     assert entry["side"] == "buy" and entry["amount"] == 0.123     # rounded
     assert sl["side"] == "sell" and sl["params"]["closePosition"] is True
     assert sl["params"]["workingType"] == "MARK_PRICE"
     # closePosition=True requires NO amount, else Binance rejects with -1106.
     assert sl["amount"] is None
-    assert tp["side"] == "sell" and tp["params"]["reduceOnly"] is True
+    assert tp1["side"] == "sell" and tp1["params"]["reduceOnly"] is True
+    assert tp1["price"] == 120.0 and abs(tp1["amount"] - 0.0615) < 2e-3  # ~50%
+    assert tp2["price"] == 125.0 and abs(tp2["amount"] - 0.0308) < 2e-3  # ~25%
+
+
+def test_ccxt_broker_single_target_full_tp(monkeypatch):
+    fake = FakeExchange()
+    _patch(monkeypatch, fake)
+    from maya.execution.brokers import CCXTBroker
+
+    broker = CCXTBroker(Settings(mode=RunMode.TESTNET, symbol="BTCUSDT"))
+    # tp2 == 0 => single target, one full-size TP order.
+    intent = TradeIntent("BTCUSDT", "short", "liquidity_sweep_choch",
+                         entry_price=100.0, stop_loss=104.0, take_profit_1=80.0,
+                         take_profit_2=0.0, confluence_score=8, expected_rr=5.0)
+    assert broker.open_position(intent, qty=0.2, leverage=5) is True
+    assert [o["type"] for o in fake.orders] == ["limit", "STOP_MARKET", "limit"]
 
 
 def test_ccxt_broker_market_close_is_reduce_only(monkeypatch):

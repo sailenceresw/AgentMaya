@@ -22,6 +22,7 @@ from maya.strategy.models import TradeIntent
 class Broker(Protocol):
     def open_position(self, intent: TradeIntent, qty: float, leverage: int) -> bool: ...
     def close_position(self, pos: Position, price: float, reason: str) -> None: ...
+    def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None: ...
 
 
 class PaperBroker:
@@ -31,14 +32,19 @@ class PaperBroker:
         self.settings = settings
 
     def open_position(self, intent: TradeIntent, qty: float, leverage: int) -> bool:
-        logger.info("[PAPER] OPEN {} {} qty={:.5f} entry={:.2f} SL={:.2f} TP={:.2f}",
+        tp2 = f" TP2={intent.take_profit_2:.2f}" if intent.take_profit_2 else ""
+        logger.info("[PAPER] OPEN {} {} qty={:.5f} entry={:.2f} SL={:.2f} TP={:.2f}{}",
                     intent.direction, intent.symbol, qty, intent.entry_price,
-                    intent.stop_loss, intent.take_profit_1)
+                    intent.stop_loss, intent.take_profit_1, tp2)
         return True
 
+    def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None:
+        # Paper: scaling out is pure local accounting; nothing to send.
+        pass
+
     def close_position(self, pos: Position, price: float, reason: str) -> None:
-        logger.info("[PAPER] CLOSE {} {} @ {:.2f} ({}) pnl={:.2f}",
-                    pos.direction, pos.symbol, price, reason, pos.pnl_at(price))
+        logger.info("[PAPER] CLOSE {} {} rem={:.5f} @ {:.2f} ({})",
+                    pos.direction, pos.symbol, pos.remaining_qty, price, reason)
 
 
 class CCXTBroker:
@@ -85,19 +91,43 @@ class CCXTBroker:
                 "stopPrice": self._price(intent.stop_loss),
                 "closePosition": True, "workingType": "MARK_PRICE",
             })
-            self.ex.create_order(sym, "limit", close_side, qty,
-                                 self._price(intent.take_profit_1), {"reduceOnly": True})
-            logger.info("[{}] orders placed for {} {} qty={}",
-                        self.settings.mode.value.upper(), intent.direction, sym, qty)
+            # Take-profit orders. Scale out when a distinct TP2 exists: 50% at
+            # TP1, 25% at TP2, 25% runner (closed by the stop). Otherwise one
+            # reduce-only TP for the full size.
+            distinct_tp2 = intent.take_profit_2 > 0 and (
+                (intent.direction == "long" and intent.take_profit_2 > intent.take_profit_1)
+                or (intent.direction == "short" and intent.take_profit_2 < intent.take_profit_1))
+            if distinct_tp2:
+                self.ex.create_order(sym, "limit", close_side, self._amt(qty * 0.5),
+                                     self._price(intent.take_profit_1), {"reduceOnly": True})
+                self.ex.create_order(sym, "limit", close_side, self._amt(qty * 0.25),
+                                     self._price(intent.take_profit_2), {"reduceOnly": True})
+            else:
+                self.ex.create_order(sym, "limit", close_side, qty,
+                                     self._price(intent.take_profit_1), {"reduceOnly": True})
+            logger.info("[{}] orders placed for {} {} qty={} (scaled={})",
+                        self.settings.mode.value.upper(), intent.direction, sym, qty, distinct_tp2)
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error("order placement failed: {}", exc)
             return False
 
+    def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None:
+        # Live: scaled TP exits were pre-placed as reduce-only limit orders at
+        # open, so the exchange fills them; nothing to send here.
+        logger.debug("[{}] tranche {} filled on exchange ({})",
+                     self.settings.mode.value.upper(), reason, self.symbol)
+
     def close_position(self, pos: Position, price: float, reason: str) -> None:
         side = "sell" if pos.direction == "long" else "buy"
         try:
-            self.ex.create_order(self.symbol, "market", side, self._amt(pos.quantity),
+            # Cancel any resting TP/SL orders, then flatten the remainder.
+            try:
+                self.ex.cancel_all_orders(self.symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("cancel_all_orders: {}", exc)
+            self.ex.create_order(self.symbol, "market", side,
+                                 self._amt(max(pos.remaining_qty, 0) or pos.quantity),
                                  None, {"reduceOnly": True})
             logger.info("[{}] market close {} ({})",
                         self.settings.mode.value.upper(), self.symbol, reason)
