@@ -122,8 +122,34 @@ def test_hyperliquid_feed_converts_candles(monkeypatch):
     _patch(monkeypatch)
     from maya.data.hyperliquid_feed import HyperliquidFeed
     feed = HyperliquidFeed(Settings(venue=Venue.HYPERLIQUID, mode=RunMode.PAPER,
-                                    symbol="BTCUSDT", max_candles=1))
+                                    symbol="BTCUSDT", max_candles=1, hl_ws_trades=False))
     candles = list(feed.candles())
     assert len(candles) == 1
     c = candles[0]
     assert (c.open, c.high, c.low, c.close, c.volume) == (100.0, 110.0, 95.0, 105.0, 1000.0)
+
+
+def test_trade_aggregator_buckets_and_sides():
+    from maya.data.hyperliquid_trades import HyperliquidTradeAggregator
+    from maya.signals.indicators import candle_delta
+    agg = HyperliquidTradeAggregator(Settings(symbol="BTCUSDT"))
+    # Simulate websocket messages: aggressive buys ("B") and sells ("A").
+    agg._on_msg({"channel": "trades", "data": [
+        {"coin": "BTC", "side": "B", "px": "100", "sz": "3", "time": 1000},
+        {"coin": "BTC", "side": "A", "px": "100", "sz": "1", "time": 1500},
+        {"coin": "BTC", "side": "B", "px": "100", "sz": "2", "time": 61000},  # next bucket
+    ]})
+    first = agg.trades_for(0, 60_000)
+    assert len(first) == 2
+    # delta = buy(3) - sell(1) = +2
+    assert abs(candle_delta(first) - 2.0) < 1e-9
+    second = agg.trades_for(60_000, 120_000)
+    assert len(second) == 1 and candle_delta(second) == 2.0
+
+
+def test_trade_aggregator_ignores_malformed():
+    from maya.data.hyperliquid_trades import HyperliquidTradeAggregator
+    agg = HyperliquidTradeAggregator(Settings(symbol="BTCUSDT"))
+    agg._on_msg({"data": [{"coin": "BTC", "side": "B"}]})  # missing px/sz/time
+    agg._on_msg({"data": [{"coin": "ETH", "side": "B", "px": "1", "sz": "1", "time": 1}]})
+    assert agg.trades_for(0, 10**12) == []

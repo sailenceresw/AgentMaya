@@ -95,9 +95,10 @@ interlock string is set and the agent key is present.
 
 - **Egress:** the host must reach `api.hyperliquid.xyz` /
   `api.hyperliquid-testnet.xyz`. Restricted sandboxes block these.
-- **Order flow:** Hyperliquid klines carry no per-trade data, so CVD is
-  *approximated* from each candle's close position (same as the CSV backtester).
-  A future upgrade can aggregate the websocket `trades` feed for true CVD.
+- **Order flow / CVD:** live trading uses Hyperliquid's **websocket `trades`
+  feed for true CVD** (real buy/sell aggressor volume). Set
+  `MAYA_HL_WS_TRADES=false` to fall back to the kline approximation. Backtests
+  from historical klines still approximate CVD (klines carry no per-trade data).
 - **Backtesting:** pull real Hyperliquid history straight into the backtester:
   ```bash
   python -m maya.backtest --source hyperliquid --days 365 --walk-forward 5

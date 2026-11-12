@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     max_candles: int = 200
     start_equity: float = 1000.0
 
+    # Use the Hyperliquid websocket trades feed for TRUE CVD (vs kline proxy).
+    hl_ws_trades: bool = True
+
     # When true (and mode==sim), replay scripted textbook setups instead of the
     # random walk — useful for demos and integration tests.
     scenario: bool = False

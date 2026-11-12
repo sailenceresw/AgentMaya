@@ -36,6 +36,12 @@ class HyperliquidFeed:
         from maya.data.hyperliquid_client import build_info
         self.info = build_info(settings)
         self._last_ts: int | None = None
+        # Optional real-CVD aggregator from the websocket trades stream.
+        self.agg = None
+        if settings.hl_ws_trades:
+            from maya.data.hyperliquid_trades import HyperliquidTradeAggregator
+            self.agg = HyperliquidTradeAggregator(settings)
+            self.agg.start()
 
     def _snapshot(self, start: int, end: int) -> list[dict]:
         try:
@@ -43,6 +49,17 @@ class HyperliquidFeed:
         except Exception as exc:  # noqa: BLE001
             logger.warning("candles_snapshot failed: {}", exc)
             return []
+
+    def _build_candle(self, row: dict) -> Candle:
+        ts = int(row["t"])
+        o, h, l, c, v = (float(row["o"]), float(row["h"]), float(row["l"]),
+                         float(row["c"]), float(row["v"]))
+        # Prefer real trades (true CVD) when the websocket has them.
+        if self.agg is not None and self.agg.active:
+            real = self.agg.trades_for(ts, ts + self.tf_ms)
+            if real:
+                return Candle(ts, o, h, l, c, v, real)
+        return _hl_candle_to_candle(row)
 
     def candles(self) -> Iterator[Candle]:
         emitted = 0
@@ -60,7 +77,11 @@ class HyperliquidFeed:
                 continue
             self._last_ts = ts
             emitted += 1
-            yield _hl_candle_to_candle(row)
+            yield self._build_candle(row)
+
+    def stop(self) -> None:
+        if self.agg is not None:
+            self.agg.stop()
 
 
 def download_candles(settings: Settings, days: int) -> Iterator[Candle]:

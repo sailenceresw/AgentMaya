@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
 
         _report(nodes, journal, processed)
         journal.close()
+        if hasattr(feed, "stop"):
+            feed.stop()
 
 
 def _reconcile(settings: Settings, nodes: TradingNodes, notifier) -> bool:
