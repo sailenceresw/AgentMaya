@@ -59,6 +59,9 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # SQLite trade-journal path (Docker persists /app/data via a volume).
+    journal_db: str = "maya_journal.db"
+
     # Telegram monitoring / control (Layer 7)
     telegram_enabled: bool = False
 

@@ -1,0 +1,16 @@
+services:
+  maya:
+    build: .
+    image: agentmaya:latest
+    env_file: .env
+    # Keep the agent running 24/7; it restarts on crash but not on manual stop.
+    restart: unless-stopped
+    # Persist the SQLite trade journal across restarts.
+    volumes:
+      - maya-data:/app/data
+    environment:
+      - MAYA_LOG_LEVEL=INFO
+      - MAYA_JOURNAL_DB=/app/data/maya_journal.db
+
+volumes:
+  maya-data:

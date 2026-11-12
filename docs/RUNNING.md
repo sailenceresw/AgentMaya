@@ -19,6 +19,22 @@ python -m pip install -r requirements.txt
 (`ccxt` and `anthropic` are only imported when you actually use real-exchange or
 LLM modes, so simulation runs even without them.)
 
+## Deploy with Docker (24/7)
+
+```bash
+cp .env.example .env     # edit: venue, mode, Hyperliquid address + agent key
+docker compose up -d     # builds and runs the agent, restarts on crash
+docker compose logs -f   # follow the live logs
+```
+
+The trade journal persists in the `maya-data` volume. To run a one-off command
+instead of the long-running agent:
+
+```bash
+docker compose run --rm maya python -m maya --check
+docker compose run --rm maya python -m maya.backtest --source hyperliquid --days 365
+```
+
 ## Quick start (simulation, no keys)
 
 ```bash

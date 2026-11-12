@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> None:
     if settings.mode is not RunMode.SIM:
         logger.warning("Running in {} mode.", settings.mode.value)
 
-    journal = TradeJournal()
+    journal = TradeJournal(settings.journal_db)
     from maya.monitor.telegram import TelegramBot
     notifier = TelegramBot(settings)
     nodes = TradingNodes(settings, journal, notifier=notifier)

@@ -1,0 +1,26 @@
+# Secrets & local config — never bake into the image
+.env
+
+# VCS / CI
+.git
+.github
+.gitignore
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Tests & docs aren't needed at runtime
+tests/
+docs/
+
+# Runtime artifacts
+*.db
+*.sqlite*
+logs/
+*.log
+*.png
