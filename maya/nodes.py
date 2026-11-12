@@ -13,13 +13,30 @@ from __future__ import annotations
 
 from loguru import logger
 
-from maya.config import Settings
+from maya.config import RiskLimits, Settings
 from maya.execution.engine import ExecutionEngine
 from maya.journal.store import TradeJournal
 from maya.risk.manager import RiskManager, SystemState
 from maya.signals.processor import SignalProcessor
 from maya.state import TradingState
 from maya.strategy.engine import StrategyEngine
+
+
+def _load_news(settings: Settings):
+    """Load the optional high-impact news calendar for trade blackouts (§7.4)."""
+    if not settings.news_calendar:
+        return None
+    try:
+        from maya.risk.news import NewsCalendar
+        cal = NewsCalendar.from_file(settings.news_calendar,
+                                     RiskLimits.NEWS_BLACKOUT_MINUTES)
+        logger.info("Loaded {} news events from {}", len(cal.events),
+                    settings.news_calendar)
+        return cal
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load news calendar {}: {}",
+                       settings.news_calendar, exc)
+        return None
 
 
 class TradingNodes:
@@ -30,7 +47,8 @@ class TradingNodes:
         self.settings = settings
         self.processor = SignalProcessor(settings.symbol)
         self.strategy = StrategyEngine(settings)
-        self.risk = RiskManager(settings, settings.start_equity)
+        self.risk = RiskManager(settings, settings.start_equity,
+                                news_calendar=_load_news(settings))
         self.execution = ExecutionEngine(settings)
         self.journal = journal
         self.notifier = notifier            # TelegramBot or None (no-op)

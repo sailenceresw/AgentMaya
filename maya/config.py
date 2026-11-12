@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Telegram monitoring / control (Layer 7)
     telegram_enabled: bool = False
 
+    # Path to a JSON high-impact news calendar for trade blackouts (§7.4).
+    news_calendar: str = ""
+
     # Credentials are read without the MAYA_ prefix.
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", validation_alias="BINANCE_API_SECRET")
@@ -91,6 +94,7 @@ class RiskLimits:
     EQUITY_FLOOR_USDT = 50.0
     MIN_CONFLUENCE_SCORE = 7             # spec section 6.3
     DATA_STALE_SECONDS = 30
+    NEWS_BLACKOUT_MINUTES = 15           # ± window around high-impact news (§7.4)
 
 
 @lru_cache

@@ -46,8 +46,9 @@ class AccountState:
 
 
 class RiskManager:
-    def __init__(self, settings: Settings, equity: float) -> None:
+    def __init__(self, settings: Settings, equity: float, news_calendar=None) -> None:
         self.settings = settings
+        self.news = news_calendar      # NewsCalendar or None
         self.account = AccountState(
             equity=equity, start_equity=equity,
             day_start_equity=equity, week_start_equity=equity,
@@ -131,6 +132,13 @@ class RiskManager:
             # single loss re-trips the limit and we loop cooldown forever.
             acc.state = SystemState.RUNNING
             acc.consecutive_losses = 0
+
+        # News-event blackout: no new entries ±N min around a high-impact event
+        # (spec §7.4). Open positions are still managed normally.
+        if self.news is not None:
+            blackout, name = self.news.in_blackout(now_ts)
+            if blackout:
+                return RiskDecision(False, f"news blackout ({name})")
 
         if acc.open_positions >= RiskLimits.MAX_CONCURRENT_POSITIONS:
             return RiskDecision(False, "max concurrent positions")
