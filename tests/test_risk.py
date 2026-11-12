@@ -427,3 +427,16 @@ def test_missing_binance_sdk_is_named_not_blamed_on_ccxt(monkeypatch):
     assert not report.ok
     assert "binance-sdk-derivatives-trading-usds-futures" in report.errors[0]
     assert "ccxt" not in report.errors[0]
+
+
+def test_halt_is_sticky_tells_period_halts_from_the_ones_needing_a_human():
+    """The backtester keeps running through a halt only when this is False,
+    so it must never call an equity-floor or manual halt temporary."""
+    rm = RiskManager(_settings(), equity=1000.0)
+    assert rm.halt_is_sticky is False            # not halted at all
+    rm.on_trade_closed(-40.0, now_ts=0)          # 4% > the 3% daily limit
+    assert rm.account.state is SystemState.HALTED and rm.halt_is_sticky is False
+    rm.manual_halt()
+    assert rm.halt_is_sticky is True             # one sticky reason is enough
+    rm.roll_periods(86_400_000)                  # the daily halt lifts, manual stays
+    assert rm.account.state is SystemState.HALTED and rm.halt_is_sticky is True

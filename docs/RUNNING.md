@@ -561,6 +561,52 @@ as "fees ate it: profitable before fees, losing after". Scanning many pairs
 also means some will look good by luck. Trust a pair only if it holds up
 across several neighbours *and* on a later date range it was not chosen on.
 
+**A backtest covers the whole range, loss limits included.** A daily or
+weekly loss halt no longer ends the run: the risk manager refuses entries
+while halted and lifts the halt when the period rolls, the candles keep
+coming, and the row notes how many halts were sat out. The loop used to
+stop at the first halt and report what it had as if it were the full range.
+Measured on 24 months of BTC/ETH/SOL 15m with `MAYA_SIZING_MODE=risk`, that
+ended the three runs after 41%, 51% and 33% of the candles (BTC and SOL
+were down about 2% at that point); run to the end, each loses 41%. Only a halt nothing lifts
+(the equity floor) still stops a backtest, and then the verdict reads
+`STOPPED at N% of the data` instead of judging the remainder unseen.
+
+The live loops (`maya.run`, `maya.scan_run`) are unchanged: they still exit
+on any halt and wait for you to restart them. The backtest models the
+restart; it does not model you deciding not to.
+
+### Is there a signal at all: the train/test study
+
+```bash
+python -m maya.backtest.study --symbols BTCUSDT,ETHUSDT,SOLUSDT --timeframe 15m \
+    --start 2024-08-10 --end 2026-08-09 \
+    --test-start 2026-08-10 --test-end 2026-10-31
+```
+
+The sweep judges a few hundred trades. The study uses every closed candle:
+it runs the live signal processor, turns each reading into ten signed
+features (taker imbalance, candle shape, value-area position, absorption,
+CVD divergence, patterns, higher-timeframe trend, liquidity sweeps), fits
+one linear model on the first window and scores it on a later window it
+never saw. It prints the correlation between forecast and outcome (IC), its
+t-statistic, and the average move on the 10% of bars the model was surest
+about — the best case before fees — next to the venue's round trip.
+Without `--test-start` the last 30% of the window is held out. `--save`
+writes the fitted model as JSON; nothing in the agent reads it.
+
+Result on the windows above (Binance data, 209,343 train bars, 23,007 test
+bars, 4 candles ahead):
+
+| | IC | t | best-case edge | round trip to beat |
+|---|---|---|---|---|
+| train (24 months) | +0.015 | +3.4 | +1.9 bps | 7 bps Binance, 26 bps via MetaMask |
+| **test (12 unseen weeks)** | −0.004 | −0.3 | −0.1 bps | |
+
+Eight of the ten features changed sign between the windows. The in-sample
+fit is the size the README's earlier study reported (~1 bps) and it does
+not survive.
+
 ## Session state across restarts
 
 `trades_today`, `consecutive_losses`, and the day's realized PnL used to
@@ -696,7 +742,8 @@ python -m maya.data.download --import-dumps ~/Downloads/BTCUSDT-1h-2025-*.zip \
 ```
 
 Both paths keep the taker-buy column, and the file names match what
-`maya.backtest.runner` and `maya.backtest.sweep` look for. Funding history
+`maya.backtest.runner`, `maya.backtest.sweep` and `maya.backtest.study` look
+for. Funding history
 is fetched alongside (`--no-funding` skips it).
 
 ### Charts

@@ -49,6 +49,10 @@ class SweepRow:
         m = self.metrics
         if m is None:
             return f"ERROR {self.error}"
+        if m.stopped_reason:
+            # Said first: every other verdict would be describing only the
+            # part of the range that ran before the halt.
+            return f"STOPPED at {m.coverage:.0%} of the data: {m.stopped_reason}"
         if m.trades < 30:
             return "too few trades to judge"
         if m.total_pnl_usdt <= 0:
@@ -117,7 +121,8 @@ def format_rows(rows: list[SweepRow]) -> str:
             f"{r.symbol:<12}{r.timeframe:<5}{m.trades:>7}{m.win_rate:>7.1f}"
             f"{m.profit_factor:>6.2f}{m.gross_pnl_usdt:>10.2f}{m.total_fees:>9.2f}"
             f"{m.total_pnl_usdt:>10.2f}{('n/a' if share is None else f'{share:.0%}'):>11}"
-            f"{m.max_drawdown_pct:>8.1f}  {r.verdict}")
+            f"{m.max_drawdown_pct:>8.1f}  {r.verdict}"
+            + (f" ({m.period_halts} loss-limit halt(s) sat out)" if m.period_halts else ""))
     return "\n".join(out)
 
 

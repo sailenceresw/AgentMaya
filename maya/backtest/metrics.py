@@ -29,6 +29,22 @@ class BacktestMetrics:
     total_fees: float = 0.0
     # (day_start_ms, equity) per processed day, oldest first — for charts.
     equity_curve: list[tuple[int, float]] = field(default_factory=list)
+    # How much of the requested data the run actually measured. A result is
+    # only a statement about the candles it processed: a run a sticky halt
+    # (equity floor) cut short says nothing about what came after.
+    candles_processed: int = 0
+    candles_total: int = 0
+    # Daily/weekly loss halts sat out along the way (trading resumed after).
+    period_halts: int = 0
+    # Why the run ended before the data did; "" when it ran to the end.
+    stopped_reason: str = ""
+
+    @property
+    def coverage(self) -> float:
+        """Fraction of the data processed; 1.0 when the totals are unknown."""
+        if self.candles_total <= 0:
+            return 1.0
+        return min(1.0, self.candles_processed / self.candles_total)
 
     @property
     def gross_pnl_usdt(self) -> float:

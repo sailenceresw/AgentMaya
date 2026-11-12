@@ -53,3 +53,12 @@ def test_a_failing_pair_is_reported_not_fatal():
 
     rows = sweep(Settings(), ["NOPEUSDT"], ["1h"], "2025-01-01", "2025-02-01", loader=loader)
     assert rows[0].metrics is None and "symbol not listed" in rows[0].verdict
+
+
+def test_a_run_cut_short_is_never_given_an_ordinary_verdict():
+    """A result that covers 2% of the range must not read "loses money" or
+    "candidate" as if it described all of it."""
+    m = _m(candles_processed=20, candles_total=1000,
+           stopped_reason="equity below floor ($40.00)")
+    assert SweepRow("X", "1h", m).verdict.startswith("STOPPED at 2% of the data")
+    assert "sat out" in format_rows([SweepRow("X", "1h", _m(period_halts=3))])

@@ -96,7 +96,9 @@ through the same strategy, the chart desk and the fee gate. It ranks what's
 left by net R:R after fees. `python -m maya.scan_run` trades the best
 candidate (one position at a time, every hard limit intact).
 `python -m maya.backtest.sweep` measures which coins and timeframes pay
-after fees **before** any money is committed.
+after fees **before** any money is committed, and
+`python -m maya.backtest.study` tests whether the signals predict anything
+on data they were not fitted to.
 
 ## Order flow is real
 
@@ -149,6 +151,27 @@ Two findings worth knowing before changing anything:
 - **The effect is ~1 bps against ~10 bps of round-trip taker cost**, and it is
   what makers earn and takers pay. Capturing it needs post-only limit entries,
   not market orders.
+
+**Re-measured November 2026, with 12 weeks the first study never saw**
+(2026-08-10 → 2026-10-31), default settings, fees included:
+
+| 15m, net of fees | 24 months | unseen 12 weeks |
+|---|---|---|
+| Binance | 197 trades, −$179, PF 0.41–0.42 | 21 trades, −$16 |
+| Hyperliquid via MetaMask | 176 trades, −$304, PF 0.21–0.28 | 13 trades, −$17 |
+
+On 1h there are 5–13 trades per coin in two years: too few to judge. Of the
+197 Binance trades, 170 hit the stop (57 of those after the breakeven
+move), 23 timed out at four hours and 4 reached their target. The entries
+themselves carry no direction: the move in the trade's favour 4 and 16
+candles later averages −1 and −11 bps (t = −0.2 and −1.0).
+
+`python -m maya.backtest.study` asks the same question of every candle
+instead of every trade. A linear model over ten signal features, fitted on
+the 24 months, finds a best-case edge of 1.9 bps in sample and −0.1 bps on
+the unseen weeks (t = −0.3), against a round trip of 7 bps on Binance and
+26 bps through MetaMask. See
+[the study](docs/RUNNING.md#is-there-a-signal-at-all-the-traintest-study).
 
 Do not tune thresholds or add indicators to fix this — nine factors have been
 measured and none discriminate. The open directions are: flip the CVD sign and

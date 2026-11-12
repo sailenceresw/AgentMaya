@@ -152,6 +152,21 @@ class RiskManager:
             self.account.state = SystemState.RUNNING
             logger.info("New period — {} halt cleared, trading resumes", prefix)
 
+    @property
+    def halt_is_sticky(self) -> bool:
+        """True when halted for a reason no calendar rollover will lift.
+
+        Read-only: callers use it to tell "stand down until tomorrow" (a
+        daily or weekly loss halt, which :meth:`roll_periods` clears) from
+        "stop, a human has to look at this" (equity floor, stale feed,
+        manual). It changes no limit.
+        """
+        acc = self.account
+        if acc.state is not SystemState.HALTED:
+            return False
+        periodic = (self._DAILY_HALT, self._WEEKLY_HALT)
+        return any(not r.startswith(periodic) for r in acc.halt_reasons)
+
     def roll_periods(self, now_ts: int) -> None:
         """Roll the daily/weekly counters when the clock crosses a boundary.
 

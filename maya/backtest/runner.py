@@ -59,6 +59,9 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
     started = time.monotonic()
     n = 0
     last: Candle | None = None
+    period_halts = 0
+    was_halted = False
+    stopped_reason = ""
     for candle in candles:
         last = candle
         graph.invoke({"candle": candle})
@@ -74,10 +77,22 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
                         nodes.risk.account.equity, eta)
         day = (candle.timestamp // _DAY_MS) * _DAY_MS
         daily_equity[day] = nodes.risk.account.equity
-        if nodes.risk.account.state.value == "halted":
-            logger.warning("Backtest halted at candle {} ({})", n,
-                           ", ".join(nodes.risk.account.halt_reasons))
+        halted = nodes.risk.account.state.value == "halted"
+        if halted and nodes.risk.halt_is_sticky:
+            stopped_reason = ", ".join(nodes.risk.account.halt_reasons)
+            logger.warning("Backtest halted at candle {}{} ({})", n,
+                           f"/{total}" if total else "", stopped_reason)
             break
+        # A daily or weekly loss halt is not the end of the test. This loop
+        # used to `break` on any halt, so the first bad day ended the run:
+        # with risk sizing, two years of SOL 15m stopped after 33% of the
+        # candles and reported the remainder as if it had been measured. The
+        # risk manager refuses entries while halted and lifts the halt when
+        # the period rolls — the same thing a restarted live process does —
+        # so the candles keep coming and the halt is counted instead.
+        if halted and not was_halted:
+            period_halts += 1
+        was_halted = halted
 
     if nodes.execution.has_position and last is not None:
         # Mark to the last close the backtest saw, on the day it saw it.
@@ -91,6 +106,10 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
         "SELECT * FROM trades ORDER BY timestamp_exit"
     ).fetchall()
     metrics = compute_metrics(daily_equity, trade_rows, settings.start_equity)
+    metrics.candles_processed = n
+    metrics.candles_total = total if total is not None else n
+    metrics.period_halts = period_halts
+    metrics.stopped_reason = stopped_reason
     journal.close()
     return metrics
 
@@ -105,6 +124,11 @@ def _print_report(m: BacktestMetrics, start: str, end: str) -> None:
     logger.info("Max drawdown      : {:.2f}%", m.max_drawdown_pct)
     logger.info("Sharpe (annual)   : {:.2f}", m.sharpe_annualized)
     logger.info("Expectancy/trade  : ${:.2f}", m.expectancy)
+    logger.info("Data covered      : {}/{} candles ({:.0%}), {} daily/weekly loss halt(s)",
+                m.candles_processed, m.candles_total, m.coverage, m.period_halts)
+    if m.stopped_reason:
+        logger.warning("Stopped early     : {} — everything after it is unmeasured",
+                       m.stopped_reason)
     logger.info("--- Spec 14.1 backtesting gate ---")
     gate = m.passes_gate()
     for criterion, ok in gate.items():

@@ -33,6 +33,7 @@ python -m maya                                        # sim, 200 candles
 MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya  # scripted demo trade, end to end
 python -m maya.scanner                                # multi-coin scan (needs MAYA_MODE=paper)
 python -m maya.backtest.sweep --symbols ... --timeframes 15m,1h   # fee-aware measurement
+python -m maya.backtest.study --symbols ... --test-start ... --test-end ...   # train/test signal study
 python -m maya.data.download ...                      # fetch/import backtest data once
 ```
 
@@ -56,7 +57,8 @@ maya/
   execution/       ExecutionEngine; Paper, ccxt (Binance) and MetaMask/Hyperliquid brokers;
                    PositionMonitor (venue fills between candles)
   journal/         SQLite journal; restores risk state across restarts
-  backtest/        runner (same graph as live), sweep, metrics, plot, Monte Carlo, funding
+  backtest/        runner (same graph as live), sweep, study (train/test signal
+                   measurement), metrics, plot, Monte Carlo, funding
   api/server.py    token-protected monitoring API + phone dashboard + halt switch
   check_connection.py / check_metamask.py   startup preflights (Binance / Hyperliquid)
 android/           Android phone monitor for the API (Java, no dependencies)

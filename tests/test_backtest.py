@@ -136,3 +136,51 @@ def test_open_position_at_end_of_backtest_is_marked_to_the_last_close():
     expected_gross_sign = 1 if last_close < entry else -1   # the scenario trade is a short
     assert (metrics.total_pnl_usdt + metrics.total_fees) * expected_gross_sign > 0
     assert metrics.end_equity == metrics.start_equity + metrics.total_pnl_usdt
+
+
+def _three_flat_days():
+    """One candle per hour for three UTC days at a constant price: nothing
+    for the strategy to trade, so the only equity change is the injected one."""
+    from maya.data.models import Candle
+    return [Candle(timestamp=h * 3_600_000, open=100.0, high=100.0, low=100.0,
+                   close=100.0, volume=1.0, taker_buy_volume=0.5) for h in range(72)]
+
+
+def _backtest_with_loss_on_first_candle(monkeypatch, loss_usd: float):
+    """Run the real backtest loop, booking one realized loss on candle 1."""
+    import maya.backtest.runner as runner
+    from maya.nodes import TradingNodes
+
+    class LossOnFirstCandle(TradingNodes):
+        injected = False
+
+        def manage_node(self, state):
+            if not self.injected:
+                self.injected = True
+                self.risk.on_trade_closed(-loss_usd, state["candle"].timestamp)
+            return super().manage_node(state)
+
+    monkeypatch.setattr(runner, "TradingNodes", LossOnFirstCandle)
+    candles = _three_flat_days()
+    return run_backtest(Settings(mode=RunMode.SIM, timeframe="1h"), iter(candles),
+                        total=len(candles), progress_every=0)
+
+
+def test_daily_loss_halt_does_not_end_the_backtest(monkeypatch):
+    """Regression: the loop broke on *any* halt, so the first daily-loss halt
+    ended the run. On two years of real SOL 15m with risk sizing that left
+    67% of the candles unmeasured while the report read as the full range.
+    A daily halt lifts at the next UTC day, so the test must carry on."""
+    m = _backtest_with_loss_on_first_candle(monkeypatch, loss_usd=40.0)  # 4% > 3% daily
+    assert m.period_halts == 1
+    assert m.stopped_reason == ""
+    assert m.candles_processed == m.candles_total == 72 and m.coverage == 1.0
+    assert len(m.equity_curve) == 3          # days 2 and 3 were measured too
+
+
+def test_equity_floor_halt_still_ends_the_backtest_and_says_so(monkeypatch):
+    """The sticky halts keep stopping the run — nothing lifts them — but the
+    result now carries how much of the data it covers and why it stopped."""
+    m = _backtest_with_loss_on_first_candle(monkeypatch, loss_usd=960.0)  # $40 < $50 floor
+    assert "equity below floor" in m.stopped_reason
+    assert m.candles_processed == 1 and m.coverage < 0.02
