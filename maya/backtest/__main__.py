@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--equity", type=float, default=None, help="Starting equity (USDT)")
     p.add_argument("--plot", metavar="PATH", default=None,
                    help="Save an equity-curve + drawdown chart (PNG) to PATH")
+    p.add_argument("--walk-forward", type=int, metavar="N", default=0,
+                   help="Run N-fold walk-forward validation instead of one backtest")
     args = p.parse_args(argv)
 
     logger.remove()
@@ -38,6 +40,23 @@ def main(argv: list[str] | None = None) -> None:
         overrides["start_equity"] = args.equity
     settings = Settings(**overrides)
 
+    demo_banner = args.source == "demo"
+
+    # Walk-forward validation path.
+    if args.walk_forward and args.walk_forward >= 2:
+        from maya.backtest.walkforward import run_walk_forward
+        from maya.backtest.walkforward import format_report as wf_report
+        try:
+            candles = list(build_source(settings, args.source, args.csv, args.days))
+            wf = run_walk_forward(settings, candles, folds=args.walk_forward)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Walk-forward failed: {}", exc)
+            sys.exit(1)
+        if demo_banner:
+            _demo_banner()
+        print(wf_report(wf))
+        sys.exit(0)
+
     try:
         candles = build_source(settings, args.source, args.csv, args.days)
         result = Backtester(settings).run(candles)
@@ -48,13 +67,8 @@ def main(argv: list[str] | None = None) -> None:
                          "and use --source csv (see docs/RUNNING.md).")
         sys.exit(1)
 
-    if args.source == "demo":
-        print("\n" + "!" * 60)
-        print("! DEMO DATA — the scripted scenario replayed across days.")
-        print("! These numbers are MEANINGLESS for judging real profitability;")
-        print("! they only prove the backtest machinery runs. Use --source csv")
-        print("! or --source ccxt with REAL Binance history to evaluate the edge.")
-        print("!" * 60)
+    if demo_banner:
+        _demo_banner()
 
     print(format_report(result.metrics))
 
@@ -69,6 +83,15 @@ def main(argv: list[str] | None = None) -> None:
             logger.error("Could not save plot: {}", exc)
 
     sys.exit(0)  # report-only; never errors on NO-GO
+
+
+def _demo_banner() -> None:
+    print("\n" + "!" * 60)
+    print("! DEMO DATA — the scripted scenario replayed across days.")
+    print("! These numbers are MEANINGLESS for judging real profitability;")
+    print("! they only prove the backtest machinery runs. Use --source csv")
+    print("! or --source ccxt with REAL Binance history to evaluate the edge.")
+    print("!" * 60)
 
 
 if __name__ == "__main__":

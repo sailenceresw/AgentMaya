@@ -81,6 +81,14 @@ python -m maya.backtest --source csv --csv btc.csv --plot equity.png
 python -m maya.backtest --source csv --csv btc.csv --plot equity.png
 ```
 
+**Walk-forward validation** splits the history into N sequential out-of-sample
+folds and checks the strategy is consistently profitable across them (spec
+§14.1 "consistent across market regimes"):
+
+```bash
+python -m maya.backtest --source csv --csv btc.csv --walk-forward 5
+```
+
 > **Two honest caveats.** (1) The `demo` source replays one scripted winning
 > setup across many days, so its glowing numbers are meaningless — it only
 > proves the backtester runs. (2) Klines carry no per-trade data, so CVD is
