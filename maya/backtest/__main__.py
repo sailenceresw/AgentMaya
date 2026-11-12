@@ -14,8 +14,9 @@ from maya.config import RunMode, Settings
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="maya.backtest", description="Backtest the Maya strategy")
-    p.add_argument("--source", choices=["demo", "csv", "ccxt"], default="demo",
-                   help="demo=offline fixture (default), csv=file, ccxt=download from Binance")
+    p.add_argument("--source", choices=["demo", "csv", "ccxt", "hyperliquid"], default="demo",
+                   help="demo=offline fixture (default), csv=file, "
+                        "hyperliquid=download from Hyperliquid, ccxt=download from Binance")
     p.add_argument("--csv", help="Path to OHLCV CSV (for --source csv)")
     p.add_argument("--days", type=int, default=250, help="History length for ccxt/demo")
     p.add_argument("--symbol", default=None)

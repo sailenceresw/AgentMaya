@@ -131,5 +131,8 @@ def build_source(settings: Settings, source: str, csv_path: str | None,
         return from_csv(csv_path)
     if source == "ccxt":
         return from_ccxt(settings, days)
+    if source == "hyperliquid":
+        from maya.data.hyperliquid_feed import download_candles
+        return download_candles(settings, days)
     logger.info("Using offline demo dataset ({} days). Not a market model.", days)
     return demo_dataset(days)

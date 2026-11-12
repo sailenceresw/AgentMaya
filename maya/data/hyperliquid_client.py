@@ -22,10 +22,11 @@ from maya.config import RunMode, Settings
 
 def base_url(settings: Settings) -> str:
     from hyperliquid.utils import constants
-    # Hyperliquid testnet is the sandbox; mainnet is real money.
-    if settings.mode is RunMode.LIVE:
-        return constants.MAINNET_API_URL
-    return constants.TESTNET_API_URL
+    # Only `testnet` mode uses the sandbox. `paper` reads real mainnet data
+    # (orders are simulated locally) and `live` is real mainnet trading.
+    if settings.mode is RunMode.TESTNET:
+        return constants.TESTNET_API_URL
+    return constants.MAINNET_API_URL
 
 
 def build_info(settings: Settings):
@@ -44,9 +45,9 @@ def build_exchange(settings: Settings):
     wallet = Account.from_key(settings.hyperliquid_agent_key)
     account = settings.hyperliquid_account_address or wallet.address
     ex = Exchange(wallet, base_url(settings), account_address=account)
+    net = "TESTNET" if settings.mode is RunMode.TESTNET else "MAINNET"
     logger.info("Hyperliquid exchange ready (account {}, agent {}, {})",
-                account[:10] + "…", wallet.address[:10] + "…",
-                "MAINNET" if settings.mode is RunMode.LIVE else "TESTNET")
+                account[:10] + "…", wallet.address[:10] + "…", net)
     return ex
 
 

@@ -98,5 +98,8 @@ interlock string is set and the agent key is present.
 - **Order flow:** Hyperliquid klines carry no per-trade data, so CVD is
   *approximated* from each candle's close position (same as the CSV backtester).
   A future upgrade can aggregate the websocket `trades` feed for true CVD.
-- **Backtesting:** historical Hyperliquid candles can be pulled for the
-  backtester; see `maya/data/hyperliquid_feed.py::download_candles`.
+- **Backtesting:** pull real Hyperliquid history straight into the backtester:
+  ```bash
+  python -m maya.backtest --source hyperliquid --days 365 --walk-forward 5
+  ```
+  (Uses mainnet candles. Needs network access to Hyperliquid.)

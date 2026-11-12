@@ -58,7 +58,7 @@ def check_connection(settings: Settings) -> int:
 def _check_hyperliquid(settings: Settings) -> int:
     from maya.data.hyperliquid_client import connectivity_check
 
-    net = "MAINNET" if settings.mode is RunMode.LIVE else "TESTNET"
+    net = "TESTNET" if settings.mode is RunMode.TESTNET else "MAINNET"
     logger.info("Checking Hyperliquid connectivity ({}, coin={}) ...", net, settings.coin)
     res = connectivity_check(settings)
     if not res.ok:
