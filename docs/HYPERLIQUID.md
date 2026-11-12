@@ -74,6 +74,14 @@ fails, the output tells you whether it's a network block or a missing SDK.
 python -m maya        # trades on Hyperliquid testnet, autonomously
 ```
 
+**Or use the guided pre-flight** (recommended) — it runs the connectivity check
+and the backtest go/no-go gate, and only starts the agent if they pass (with an
+extra confirmation for mainnet):
+
+```bash
+scripts/go-live.sh
+```
+
 Position sizing, the 0.5%-risk rule, kill switch, news blackout, scaling TPs and
 Telegram alerts all work exactly as on the Binance venue — only the data feed
 and order routing change.
