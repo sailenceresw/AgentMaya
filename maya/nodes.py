@@ -14,7 +14,7 @@ from __future__ import annotations
 from loguru import logger
 
 from maya.config import RiskLimits, Settings
-from maya.execution.engine import ExecutionEngine
+from maya.execution.engine import build_execution_engine
 from maya.journal.store import TradeJournal
 from maya.risk.manager import RiskManager, SystemState
 from maya.signals.processor import SignalProcessor
@@ -49,7 +49,7 @@ class TradingNodes:
         self.strategy = StrategyEngine(settings)
         self.risk = RiskManager(settings, settings.start_equity,
                                 news_calendar=_load_news(settings))
-        self.execution = ExecutionEngine(settings)
+        self.execution = build_execution_engine(settings)
         self.journal = journal
         self.notifier = notifier            # TelegramBot or None (no-op)
         self._was_halted = False

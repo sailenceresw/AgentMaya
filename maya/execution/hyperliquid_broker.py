@@ -121,3 +121,38 @@ class HyperliquidBroker:
         except Exception as exc:  # noqa: BLE001
             logger.warning("reconcile fetch failed: {}", exc)
             return {"position_qty": 0.0, "open_orders": 0, "error": str(exc)}
+
+    # -- live position tracking ------------------------------------------- #
+    def sync_qty(self) -> float:
+        """Signed position size on the exchange (+long / -short / 0 flat)."""
+        try:
+            state = self.info.user_state(self.address)
+            for ap in state.get("assetPositions", []):
+                pos = ap.get("position", {})
+                if pos.get("coin") == self.coin:
+                    return float(pos.get("szi") or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sync_qty failed: {}", exc)
+        return 0.0
+
+    def realized_since(self, ts_ms: int) -> float:
+        """Realized PnL (sum of closedPnl) for this coin since `ts_ms`."""
+        try:
+            fills = self.info.user_fills(self.address)
+            return sum(float(f.get("closedPnl") or 0)
+                       for f in fills
+                       if f.get("coin") == self.coin and int(f.get("time", 0)) >= ts_ms)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("realized_since failed: {}", exc)
+            return 0.0
+
+    def cancel_resting(self) -> None:
+        """Cancel this coin's resting orders (leftover SL/TP after a close)."""
+        try:
+            orders = self.info.open_orders(self.address)
+            cancels = [{"coin": self.coin, "oid": o["oid"]}
+                       for o in orders if o.get("coin") == self.coin]
+            if cancels:
+                self.ex.bulk_cancel(cancels)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cancel_resting failed: {}", exc)

@@ -176,3 +176,12 @@ class ExecutionEngine:
         if self.position is None:
             return None
         return self._finalize(price, ts, "forced")
+
+
+def build_execution_engine(settings: Settings):
+    """Simulated engine for sim/paper; live exchange-tracking engine for
+    testnet/live (real orders must not be simulated)."""
+    if settings.uses_real_orders:
+        from maya.execution.live_engine import LiveExecutionEngine
+        return LiveExecutionEngine(settings)
+    return ExecutionEngine(settings)

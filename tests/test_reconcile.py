@@ -33,7 +33,7 @@ def test_reconcile_halts_on_existing_position(monkeypatch):
         def open_state(self):
             return {"position_qty": 0.01, "open_orders": 2}
 
-    monkeypatch.setattr("maya.execution.engine.build_broker", lambda s: StubBroker())
+    monkeypatch.setattr("maya.execution.live_engine.build_broker", lambda s: StubBroker())
     settings = Settings(mode=RunMode.TESTNET, start_equity=1000)
     nodes = TradingNodes(settings, TradeJournal(db_path=":memory:"))
     ok = _reconcile(settings, nodes, _Notifier())
@@ -49,7 +49,7 @@ def test_reconcile_proceeds_when_flat(monkeypatch):
         def open_state(self):
             return {"position_qty": 0.0, "open_orders": 0}
 
-    monkeypatch.setattr("maya.execution.engine.build_broker", lambda s: StubBroker())
+    monkeypatch.setattr("maya.execution.live_engine.build_broker", lambda s: StubBroker())
     settings = Settings(mode=RunMode.TESTNET, start_equity=1000)
     nodes = TradingNodes(settings, TradeJournal(db_path=":memory:"))
     assert _reconcile(settings, nodes, _Notifier()) is True

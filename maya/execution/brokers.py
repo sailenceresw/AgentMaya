@@ -24,6 +24,9 @@ class Broker(Protocol):
     def close_position(self, pos: Position, price: float, reason: str) -> None: ...
     def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None: ...
     def open_state(self) -> dict: ...
+    def sync_qty(self) -> float: ...            # signed live position size
+    def realized_since(self, ts_ms: int) -> float: ...
+    def cancel_resting(self) -> None: ...
 
 
 class PaperBroker:
@@ -46,6 +49,15 @@ class PaperBroker:
     def open_state(self) -> dict:
         # Paper starts flat each run; nothing on an exchange to reconcile.
         return {"position_qty": 0.0, "open_orders": 0}
+
+    def sync_qty(self) -> float:
+        return 0.0
+
+    def realized_since(self, ts_ms: int) -> float:
+        return 0.0
+
+    def cancel_resting(self) -> None:
+        pass
 
     def close_position(self, pos: Position, price: float, reason: str) -> None:
         logger.info("[PAPER] CLOSE {} {} rem={:.5f} @ {:.2f} ({})",
@@ -122,6 +134,31 @@ class CCXTBroker:
         # open, so the exchange fills them; nothing to send here.
         logger.debug("[{}] tranche {} filled on exchange ({})",
                      self.settings.mode.value.upper(), reason, self.symbol)
+
+    def sync_qty(self) -> float:
+        try:
+            for p in self.ex.fetch_positions([self.symbol]):
+                c = float(p.get("contracts") or 0)
+                if c:
+                    return c if p.get("side") == "long" else -c
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sync_qty failed: {}", exc)
+        return 0.0
+
+    def realized_since(self, ts_ms: int) -> float:
+        # Approximate realized PnL from recent closed trades on the symbol.
+        try:
+            trades = self.ex.fetch_my_trades(self.symbol, since=ts_ms, limit=100)
+            return sum(float(t.get("info", {}).get("realizedPnl") or 0) for t in trades)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("realized_since failed: {}", exc)
+            return 0.0
+
+    def cancel_resting(self) -> None:
+        try:
+            self.ex.cancel_all_orders(self.symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cancel_resting failed: {}", exc)
 
     def open_state(self) -> dict:
         """Snapshot the exchange's current position/orders for reconciliation."""
