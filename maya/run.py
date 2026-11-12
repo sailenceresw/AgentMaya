@@ -94,6 +94,14 @@ def main(argv: list[str] | None = None) -> None:
         notifier.send(f"🚀 Maya started — {settings.mode.value} {settings.symbol} "
                       f"{settings.timeframe}, equity ${nodes.risk.account.equity:.2f}")
 
+    # State reconciliation on restart (spec §8.4): refuse to trade into an
+    # unknown exchange state. If a position/orders already exist, HALT and
+    # require manual verification rather than auto-resolving.
+    if not _reconcile(settings, nodes, notifier):
+        _report(nodes, journal, 0)
+        journal.close()
+        return
+
     tf_seconds = {"1m": 60, "5m": 300, "15m": 900}.get(settings.timeframe, 60)
     processed = 0
     last_candle = None
@@ -135,6 +143,27 @@ def main(argv: list[str] | None = None) -> None:
 
         _report(nodes, journal, processed)
         journal.close()
+
+
+def _reconcile(settings: Settings, nodes: TradingNodes, notifier) -> bool:
+    """Spec §8.4 — verify local vs exchange state at startup. Returns True if
+    it is safe to start trading, False if an existing position/orders force a
+    manual-verification halt."""
+    if not settings.uses_real_orders:
+        return True
+    state = nodes.execution.broker.open_state()
+    if state.get("position_qty", 0) > 0 or state.get("open_orders", 0) > 0:
+        msg = (f"Reconciliation FAILED: exchange already has "
+               f"{state.get('position_qty', 0)} position / "
+               f"{state.get('open_orders', 0)} open orders. HALTING for manual "
+               f"verification (spec §8.4) — not starting.")
+        logger.critical(msg)
+        nodes.risk.manual_halt()
+        if notifier.enabled:
+            notifier.send("🛑 " + msg)
+        return False
+    logger.info("Reconciliation OK — exchange is flat.")
+    return True
 
 
 def _handle_commands(cmds, nodes, notifier, candle) -> None:

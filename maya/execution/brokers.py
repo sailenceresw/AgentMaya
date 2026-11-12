@@ -23,6 +23,7 @@ class Broker(Protocol):
     def open_position(self, intent: TradeIntent, qty: float, leverage: int) -> bool: ...
     def close_position(self, pos: Position, price: float, reason: str) -> None: ...
     def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None: ...
+    def open_state(self) -> dict: ...
 
 
 class PaperBroker:
@@ -41,6 +42,10 @@ class PaperBroker:
     def reduce_position(self, pos: Position, qty: float, price: float, reason: str) -> None:
         # Paper: scaling out is pure local accounting; nothing to send.
         pass
+
+    def open_state(self) -> dict:
+        # Paper starts flat each run; nothing on an exchange to reconcile.
+        return {"position_qty": 0.0, "open_orders": 0}
 
     def close_position(self, pos: Position, price: float, reason: str) -> None:
         logger.info("[PAPER] CLOSE {} {} rem={:.5f} @ {:.2f} ({})",
@@ -117,6 +122,17 @@ class CCXTBroker:
         # open, so the exchange fills them; nothing to send here.
         logger.debug("[{}] tranche {} filled on exchange ({})",
                      self.settings.mode.value.upper(), reason, self.symbol)
+
+    def open_state(self) -> dict:
+        """Snapshot the exchange's current position/orders for reconciliation."""
+        try:
+            positions = self.ex.fetch_positions([self.symbol])
+            qty = sum(abs(float(p.get("contracts") or 0)) for p in positions)
+            orders = self.ex.fetch_open_orders(self.symbol)
+            return {"position_qty": qty, "open_orders": len(orders)}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reconcile fetch failed: {}", exc)
+            return {"position_qty": 0.0, "open_orders": 0, "error": str(exc)}
 
     def close_position(self, pos: Position, price: float, reason: str) -> None:
         side = "sell" if pos.direction == "long" else "buy"
