@@ -25,13 +25,16 @@ from maya.strategy.engine import StrategyEngine
 class TradingNodes:
     """Holds stateful services and exposes them as LangGraph node callables."""
 
-    def __init__(self, settings: Settings, journal: TradeJournal) -> None:
+    def __init__(self, settings: Settings, journal: TradeJournal,
+                 notifier=None) -> None:
         self.settings = settings
         self.processor = SignalProcessor(settings.symbol)
         self.strategy = StrategyEngine(settings)
         self.risk = RiskManager(settings, settings.start_equity)
         self.execution = ExecutionEngine(settings)
         self.journal = journal
+        self.notifier = notifier            # TelegramBot or None (no-op)
+        self._was_halted = False
 
     # -- nodes ------------------------------------------------------------- #
     def manage_node(self, state: TradingState) -> TradingState:
@@ -44,6 +47,8 @@ class TradingNodes:
             logger.info("Trade closed: {} {} pnl={:.2f} ({})",
                         result.position.setup_name, result.result,
                         result.pnl_usdt, result.reason)
+            if self.notifier:
+                self.notifier.trade_closed(result, self.risk.account.equity)
             return {"closed_trade": result}
         return {"closed_trade": None}
 
@@ -69,6 +74,9 @@ class TradingNodes:
         self.risk.roll_periods(candle.timestamp)
         self.risk.check_kill_switch(candle.timestamp)
         halted = self.risk.account.state is SystemState.HALTED
+        if halted and not self._was_halted and self.notifier:
+            self.notifier.halted(self.risk.account.halt_reasons)
+        self._was_halted = halted
         intent = state.get("intent")
         if intent is None:
             return {"risk_decision": None, "halted": halted}
@@ -86,4 +94,6 @@ class TradingNodes:
         opened = self.execution.open(intent, decision, candle.timestamp)
         if opened:
             self.risk.on_trade_opened()
+            if self.notifier:
+                self.notifier.trade_opened(self.execution.position)
         return {"opened": opened}

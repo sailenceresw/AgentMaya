@@ -50,10 +50,15 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Telegram monitoring / control (Layer 7)
+    telegram_enabled: bool = False
+
     # Credentials are read without the MAYA_ prefix.
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", validation_alias="BINANCE_API_SECRET")
     anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    telegram_bot_token: str = Field(default="", validation_alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", validation_alias="TELEGRAM_CHAT_ID")
 
     @property
     def is_live(self) -> bool:

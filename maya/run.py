@@ -85,9 +85,14 @@ def main(argv: list[str] | None = None) -> None:
         logger.warning("Running in {} mode.", settings.mode.value)
 
     journal = TradeJournal()
-    nodes = TradingNodes(settings, journal)
+    from maya.monitor.telegram import TelegramBot
+    notifier = TelegramBot(settings)
+    nodes = TradingNodes(settings, journal, notifier=notifier)
     graph = build_graph(nodes)
     feed = build_feed(settings)
+    if notifier.enabled:
+        notifier.send(f"🚀 Maya started — {settings.mode.value} {settings.symbol} "
+                      f"{settings.timeframe}, equity ${nodes.risk.account.equity:.2f}")
 
     tf_seconds = {"1m": 60, "5m": 300, "15m": 900}.get(settings.timeframe, 60)
     processed = 0
@@ -109,6 +114,11 @@ def main(argv: list[str] | None = None) -> None:
             graph.invoke({"candle": candle})
             last_candle = candle
             processed += 1
+
+            # Handle operator commands from Telegram between candles (live only).
+            if settings.uses_real_data and notifier.enabled:
+                _handle_commands(notifier.poll_commands(), nodes, notifier, candle)
+
             if nodes.risk.account.state.value == "halted":
                 logger.critical("System HALTED ({}). Stopping new candles.",
                                 ", ".join(nodes.risk.account.halt_reasons))
@@ -125,6 +135,45 @@ def main(argv: list[str] | None = None) -> None:
 
         _report(nodes, journal, processed)
         journal.close()
+
+
+def _handle_commands(cmds, nodes, notifier, candle) -> None:
+    """Act on Telegram slash-commands (spec §10.1.2)."""
+    acc = nodes.risk.account
+    for cmd in cmds:
+        if cmd == "halt":
+            nodes.risk.manual_halt()
+            notifier.send("🛑 Trading halted by command.")
+        elif cmd == "resume":
+            nodes.risk.resume()
+            notifier.send("▶️ Trading resumed.")
+        elif cmd == "close_all":
+            if nodes.execution.has_position:
+                r = nodes.execution.force_close(candle.close, candle.timestamp)
+                if r:
+                    nodes.journal.record(r, r.position.confluences)
+                    nodes.risk.on_trade_closed(r.pnl_usdt, candle.timestamp)
+                    notifier.send(f"Closed position: PnL {r.pnl_usdt:+.2f}")
+            else:
+                notifier.send("No open position.")
+        elif cmd in ("status", "risk"):
+            pos = "none" if not nodes.execution.has_position else \
+                f"{nodes.execution.position.direction} {nodes.execution.position.symbol}"
+            notifier.send(
+                f"state: {acc.state.value}\nequity: ${acc.equity:.2f}\n"
+                f"open: {pos}\ntrades today: {acc.trades_today}\n"
+                f"consec losses: {acc.consecutive_losses}")
+        elif cmd == "stats":
+            m = nodes.journal.metrics()
+            if m.get("trades"):
+                notifier.summary(
+                    f"{m['trades']} trades · win {m['win_rate']}% · "
+                    f"PF {m['profit_factor']} · PnL ${m['total_pnl_usdt']}")
+            else:
+                notifier.summary("No trades yet.")
+        else:
+            notifier.send(f"Unknown command /{cmd}. Try /status /halt /resume "
+                          f"/close_all /stats /risk")
 
 
 def _report(nodes: TradingNodes, journal: TradeJournal, processed: int) -> None:

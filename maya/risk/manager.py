@@ -110,6 +110,14 @@ class RiskManager:
     def manual_halt(self) -> None:
         self._halt("manual halt command")
 
+    def resume(self) -> None:
+        """Operator-commanded resume: clear a HALT and re-baseline the day."""
+        self.account.state = SystemState.RUNNING
+        self.account.halt_reasons = []
+        self.account.consecutive_losses = 0
+        self.account.day_start_equity = self.account.equity
+        logger.warning("Trading RESUMED by operator command")
+
     # -- per-intent screening ---------------------------------------------- #
     def screen(self, intent: TradeIntent, now_ts: int) -> RiskDecision:
         acc = self.account

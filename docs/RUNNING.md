@@ -162,6 +162,32 @@ export ANTHROPIC_API_KEY=sk-ant-...
 When enabled, an LLM reviews each trade the rules already approved and may
 **veto** it (it can never originate a trade — spec section 6.4).
 
+## Telegram alerts & remote control (Layer 7)
+
+Create a bot with [@BotFather](https://t.me/BotFather), get your chat id from
+[@userinfobot](https://t.me/userinfobot), then:
+
+```bash
+export MAYA_TELEGRAM_ENABLED=true
+export TELEGRAM_BOT_TOKEN=123456:ABC...
+export TELEGRAM_CHAT_ID=987654321
+```
+
+Maya then sends alerts on every trade open/close, kill-switch halt, and startup,
+and accepts commands from that chat (polled between candles in live modes):
+
+| Command | Action |
+|---|---|
+| `/status` | state, equity, open position, trades today |
+| `/halt` | stop new trades immediately |
+| `/resume` | clear a halt and resume |
+| `/close_all` | flatten the open position at market |
+| `/stats` | performance summary |
+| `/risk` | current risk state |
+
+Alerts fail soft — a Telegram outage never interrupts trading. Disabled by
+default, so sim/paper/backtest runs are unaffected.
+
 ## Tests
 
 ```bash
