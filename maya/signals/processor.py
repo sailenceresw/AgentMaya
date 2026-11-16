@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 
 import numpy as np
+from loguru import logger
 
 from maya.data.models import Candle
 from maya.signals import indicators as ind
@@ -31,7 +32,8 @@ DEFAULT_HTF = ("15m", "1h")
 
 class SignalProcessor:
     def __init__(self, symbol: str, window: int = WINDOW,
-                 htf_timeframes: tuple[str, ...] | list[str] = DEFAULT_HTF) -> None:
+                 htf_timeframes: tuple[str, ...] | list[str] = DEFAULT_HTF,
+                 kronos=None, kronos_timeframe: str = "15m") -> None:
         self.symbol = symbol
         self.candles: deque[Candle] = deque(maxlen=window)
         self.prices: deque[float] = deque(maxlen=window)
@@ -44,6 +46,11 @@ class SignalProcessor:
         # re-deriving EMAs and swings 15x more often than they can move is
         # pure waste on the hot path.
         self._htf: dict[str, HTFContext] = {}
+        # Optional KronosForecaster. It reads the closed bars of one of the
+        # higher timeframes above, so it sees a bar exactly when they do.
+        self._kronos = kronos
+        self._kronos_tf = kronos_timeframe
+        self._kronos_signal = None
 
     def _update_htf(self, candle: Candle) -> None:
         for agg in self.aggregators:
@@ -52,6 +59,17 @@ class SignalProcessor:
                 ctx = ta.analyze(closed, agg.label)
                 ctx.session_vwap = session_vwap(closed)
                 self._htf[agg.label] = ctx
+                if self._kronos is not None and agg.label == self._kronos_tf:
+                    self._update_kronos(closed)
+
+    def _update_kronos(self, closed: list[Candle]) -> None:
+        # A forecast that fails must not stop the candle loop: Kronos is one
+        # reading among many, and every other signal is still valid.
+        try:
+            self._kronos_signal = self._kronos.signal(closed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Kronos forecast failed, reading dropped: {}", exc)
+            self._kronos_signal = None
 
     def process(self, candle: Candle, funding_rate: float = 0.0,
                 long_short_ratio: float = 1.0) -> SignalObject:
@@ -105,6 +123,7 @@ class SignalProcessor:
             range_low=range_low,
             open=candle.open,
             htf=dict(self._htf),
+            kronos=self._kronos_signal,
             atr=atr_value,
             patterns=[m.name for m in matches],
             pattern_bias=pat.pattern_bias(matches),

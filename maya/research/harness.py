@@ -53,6 +53,10 @@ class Hypothesis:
     # reason. A blocked hypothesis is refused before anything runs, so it
     # writes no registry row and does not raise the threshold.
     blocked: str = ""
+    # Optional check run just before a test: returns why the hypothesis cannot
+    # run in this environment (a missing model, say), or '' if it can. Like
+    # ``blocked``, a refusal here writes no row.
+    precheck: Callable[[], str] | None = None
 
     @property
     def cost_model(self) -> CostModel:

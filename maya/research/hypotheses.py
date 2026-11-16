@@ -156,3 +156,54 @@ register(Hypothesis(
     cost="maker_filled",
     timeframe="15m",
 ))
+
+
+# -- Kronos ------------------------------------------------------------------ #
+# One configuration, fixed before any result: Kronos-small, 256 bars in,
+# 4 bars out, 3 samples at T=1.0 / top_p=0.9, one decision every 16 bars
+# (non-overlapping 4-bar holds, spaced so 24 months stays feasible on CPU),
+# 5 bps margin on top of the taker round trip.
+KRONOS_STRIDE = 16
+
+
+def kronos_samples(data: dict[str, list[Candle]], forecaster_for=None) -> list[Sample]:
+    """Trade the Kronos signal directly and hold for the forecast horizon."""
+    from maya.config import get_settings
+    from maya.research.costs import TAKER
+    from maya.signals.kronos_signal import ForecastCache, KronosForecaster
+
+    settings = get_settings()
+    cache = ForecastCache(settings.kronos_cache_path) if forecaster_for is None else None
+    out: list[Sample] = []
+    for symbol, candles in data.items():
+        if len(candles) < 2:
+            continue
+        bar_ms = candles[1].timestamp - candles[0].timestamp
+        fc = forecaster_for(symbol, bar_ms) if forecaster_for else KronosForecaster(
+            symbol, bar_ms, TAKER.round_trip_bps / 10_000, repo_path=settings.kronos_repo_path,
+            lookback=256, pred_len=4, samples=3, temperature=1.0, top_p=0.9, margin_bps=5.0,
+            cache=cache, device=settings.kronos_device or None)
+        for i in range(fc.lookback - 1, len(candles) - fc.pred_len, KRONOS_STRIDE):
+            sig = fc.signal(candles[: i + 1])
+            if sig is None or sig.direction is None:
+                continue
+            fwd = forward_return(candles, i, fc.pred_len)
+            if fwd is not None:
+                out.append(Sample(candles[i].timestamp, fwd if sig.direction == "long" else -fwd))
+    return out
+
+
+def _kronos_precheck() -> str:
+    from maya.config import get_settings
+    from maya.signals.kronos_signal import unavailable_reason
+    return unavailable_reason(get_settings().kronos_repo_path)
+
+
+register(Hypothesis(
+    id="kronos_small_15m",
+    description="Kronos-small forecast 4 bars ahead on 15m; trade when the forecast "
+                "clears taker round trip plus 5 bps; hold 4 bars.",
+    generate=kronos_samples,
+    timeframe="15m",
+    precheck=_kronos_precheck,
+))

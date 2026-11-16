@@ -35,7 +35,9 @@ class TradingNodes:
                  funding=None) -> None:
         self.settings = settings
         self.processor = SignalProcessor(settings.symbol,
-                                         htf_timeframes=settings.htf_list)
+                                         htf_timeframes=settings.htf_list,
+                                         kronos=self._build_kronos(settings),
+                                         kronos_timeframe=settings.kronos_timeframe)
         # Optional funding-rate lookup (maya.backtest.funding.FundingSchedule).
         # Absent, funding stays 0.0 and the funding confluence factor simply
         # never fires — which is what it did unconditionally before.
@@ -52,6 +54,29 @@ class TradingNodes:
         self.lessons = LessonsReviewer(
             journal, settings.lessons_similarity, settings.lessons_min_matches,
             settings.lessons_min_win_rate) if settings.lessons_veto_enabled else None
+
+    @staticmethod
+    def _build_kronos(settings: Settings):
+        """The Kronos forecaster for Iris, or None when it is switched off."""
+        if not settings.kronos_enabled:
+            return None
+        from maya.fees import FeeModel
+        from maya.signals.kronos_signal import ForecastCache, KronosForecaster
+        from maya.timeframe import timeframe_ms
+
+        if settings.kronos_timeframe not in settings.htf_list:
+            raise ValueError(
+                f"kronos_timeframe={settings.kronos_timeframe!r} must be one of the "
+                f"higher timeframes Iris builds ({settings.htf_list})")
+        return KronosForecaster(
+            settings.symbol, timeframe_ms(settings.kronos_timeframe),
+            FeeModel.for_settings(settings).worst_round_trip("limit"),
+            repo_path=settings.kronos_repo_path, lookback=settings.kronos_lookback,
+            pred_len=settings.kronos_pred_len, samples=settings.kronos_samples,
+            temperature=settings.kronos_temperature, top_p=settings.kronos_top_p,
+            margin_bps=settings.kronos_margin_bps,
+            cache=ForecastCache(settings.kronos_cache_path),
+            device=settings.kronos_device or None)
 
     # -- nodes ------------------------------------------------------------- #
     def manage_node(self, state: TradingState) -> TradingState:

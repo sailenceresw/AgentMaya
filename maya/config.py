@@ -102,6 +102,22 @@ class Settings(BaseSettings):
     profit_lock_trigger_pct: float = 0.6
     profit_trail_pct: float = 0.3
 
+    # -- Kronos forecast input (unmeasured, so off) -------------------------- #
+    # One extra reading on the SignalObject, computed when a bar of
+    # ``kronos_timeframe`` closes. Needs a clone of github.com/shiyu-coder/Kronos
+    # at ``kronos_repo_path`` with its requirements installed.
+    kronos_enabled: bool = False
+    kronos_repo_path: str = ""
+    kronos_timeframe: str = "15m"
+    kronos_lookback: int = 256          # bars fed to the model, at most 512
+    kronos_pred_len: int = 4            # bars forecast ahead
+    kronos_samples: int = 3             # sampled paths averaged per forecast
+    kronos_temperature: float = 1.0
+    kronos_top_p: float = 0.9
+    kronos_margin_bps: float = 5.0      # safety margin on top of round-trip cost
+    kronos_cache_path: str = "data/kronos_cache.db"
+    kronos_device: str = ""             # blank lets the predictor choose
+
     # -- paper entry simulation --------------------------------------------- #
     # "immediate": a limit entry fills at once at the intent price (the old
     #              behaviour, and the optimistic case).
