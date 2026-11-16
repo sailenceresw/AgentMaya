@@ -179,6 +179,7 @@ run. A pass then has to hold on the newest 120 days, which are read once.
 | `mtf_bias_filter` | | | | | not run |
 | `cvd_flip` | | | | | not run |
 | `maker_cvd_reversion` | | | | | not run |
+| `trail_1r_after_2r` | | | | | not run |
 | `kronos_small_15m` | | | | | not run (needs Kronos installed) |
 | `mtf_15s_trigger` | | | | | blocked: needs trade-level history |
 
@@ -195,8 +196,8 @@ What was added alongside the harness, all off by default unless noted:
 - Risk rules for a small account: 3% risk per trade, 10 trades a day, 10%
   daily loss limit, 10x leverage and notional cap. These are on, and three of
   them are looser than before.
-- A stop that locks in breakeven plus fees at +0.6% and then trails by 0.3%.
-  On.
+- A stop that locks in breakeven plus fees at +0.6%. On. A trailing stop
+  measured in the trade's own stop distance is available and off.
 - A lesson saved for every losing trade, and a veto on setups whose context
   has a losing record. On.
 - A 15m bias filter and a 15-second order-flow trigger.

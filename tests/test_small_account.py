@@ -178,56 +178,115 @@ def test_stop_stays_put_below_the_trigger():
     assert not engine.position.moved_to_breakeven
 
 
-def test_lock_moves_stop_to_breakeven_plus_fees_then_trails():
+def test_default_is_lock_only_with_no_trail():
     engine = _open()
+    assert engine.settings.profit_trail_mode == "off"
     engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))     # +0.7% close: lock fires
     pos = engine.position
     fees = 100 * engine.fees.worst_round_trip(engine.order_type)
-    assert pos.moved_to_breakeven
-    # Trail from the 100.7 high is 100.398, already above breakeven plus fees.
-    assert pos.stop_loss == pytest.approx(100.7 * 0.997)
-    assert pos.stop_loss > 100 + fees
-
-    engine.manage(_bar(2, 100.7, 101.5, 100.6, 101.4))   # new best: 101.5
-    assert pos.stop_loss == pytest.approx(101.5 * 0.997)
+    assert pos.moved_to_breakeven and pos.stop_loss == pytest.approx(100 + fees)
+    engine.manage(_bar(2, 100.7, 101.5, 100.6, 101.4))   # runs on: the stop stays put
+    engine.manage(_bar(3, 101.4, 101.9, 101.0, 101.8))
+    assert pos.stop_loss == pytest.approx(100 + fees)
 
 
-def test_lock_alone_covers_the_round_trip():
-    # A wide trail leaves the breakeven-plus-fees lock as the active stop.
-    engine = _open(profit_trail_pct=5.0)
+def test_lock_only_lets_a_winner_pull_back_and_still_reach_target():
+    """The case the 0.3% trail got wrong: +1.5%, a 0.5% pullback, then target."""
+    engine = _open()
     engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))
-    fees = 100 * engine.fees.worst_round_trip(engine.order_type)
-    assert engine.position.stop_loss == pytest.approx(100 + fees)
-    result = engine.manage(_bar(2, 100.7, 100.7, 99.0, 99.2))   # reverses through it
+    engine.manage(_bar(2, 100.7, 101.5, 100.9, 101.4))
+    assert engine.manage(_bar(3, 101.4, 101.4, 100.9, 101.0)) is None   # pullback survives
+    result = engine.manage(_bar(4, 101.0, 104.2, 101.0, 104.0))
+    assert result.reason == "take_profit" and result.exit_price == 104
+
+
+def test_lock_covers_the_round_trip_on_a_reversal():
+    engine = _open()
+    engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))
+    result = engine.manage(_bar(2, 100.7, 100.7, 99.0, 99.2))   # reverses through the lock
     assert result.reason == "stop_loss" and result.pnl_usdt == pytest.approx(0.0, abs=1e-9)
 
 
-def test_trailing_stop_never_moves_back():
-    engine = _open()
+def test_short_lock_mirrors_the_long():
+    engine = _open("short")
+    engine.manage(_bar(1, 100, 100.0, 99.3, 99.3))
+    fees = 100 * engine.fees.worst_round_trip(engine.order_type)
+    assert engine.position.stop_loss == pytest.approx(100 - fees)
+
+
+# pct mode: the old fixed-percent trail, kept so it can be compared.
+def test_pct_trail_follows_the_best_price_after_the_lock():
+    engine = _open(profit_trail_mode="pct")
     engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))
+    pos = engine.position
+    assert pos.stop_loss == pytest.approx(100.7 * 0.997)
     engine.manage(_bar(2, 100.7, 101.5, 100.9, 101.4))
-    high_water = engine.position.stop_loss
-    engine.manage(_bar(3, 101.4, 101.45, 101.25, 101.3))  # lower high, above the stop
-    assert engine.position.stop_loss == high_water
+    assert pos.stop_loss == pytest.approx(101.5 * 0.997)
+    engine.manage(_bar(3, 101.4, 101.45, 101.25, 101.3))  # lower high: never moves back
+    assert pos.stop_loss == pytest.approx(101.5 * 0.997)
 
 
-def test_trailed_stop_out_books_a_win():
-    engine = _open()
+def test_pct_trail_cuts_the_same_winner_short():
+    engine = _open(profit_trail_mode="pct")
     engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))
     engine.manage(_bar(2, 100.7, 101.5, 100.9, 101.4))
     result = engine.manage(_bar(3, 101.4, 101.4, 100.9, 101.0))
-    assert isinstance(result, TradeResult)
-    assert result.reason == "stop_loss" and result.result == "win"
-    assert result.exit_price == pytest.approx(101.5 * 0.997)
+    assert isinstance(result, TradeResult) and result.reason == "stop_loss"
+    assert result.exit_price == pytest.approx(101.5 * 0.997)   # +1.2%, target was +4%
 
 
-def test_short_side_mirrors_the_long():
-    engine = _open("short")
+def test_pct_trail_short_side():
+    engine = _open("short", profit_trail_mode="pct")
     engine.manage(_bar(1, 100, 100.0, 99.3, 99.3))
+    assert engine.position.stop_loss == pytest.approx(99.3 * 1.003)
+
+
+# r mode: trail measured in the trade's own stop distance (0.5 here, so 1R = 0.5).
+def test_r_trail_waits_until_two_r_in_profit():
+    engine = _open(profit_trail_mode="r")
+    engine.manage(_bar(1, 100, 100.95, 100.0, 100.9))    # +1.8R close: lock only
     pos = engine.position
-    assert pos.moved_to_breakeven and pos.stop_loss == pytest.approx(99.3 * 1.003)
-    engine.manage(_bar(2, 99.3, 99.4, 98.5, 98.6))
-    assert pos.stop_loss == pytest.approx(98.5 * 1.003)
+    fees = 100 * engine.fees.worst_round_trip(engine.order_type)
+    assert pos.stop_loss == pytest.approx(100 + fees) and not pos.trail_armed
+    engine.manage(_bar(2, 100.9, 101.2, 100.8, 101.1))   # +2.2R close: armed
+    assert pos.trail_armed and pos.stop_loss == pytest.approx(101.2 - 0.5)
+
+
+def test_r_trail_follows_one_r_behind_and_never_moves_back():
+    engine = _open(profit_trail_mode="r")
+    engine.manage(_bar(1, 100, 101.2, 100.0, 101.1))
+    engine.manage(_bar(2, 101.1, 102.0, 101.0, 101.9))
+    pos = engine.position
+    assert pos.stop_loss == pytest.approx(101.5)
+    engine.manage(_bar(3, 101.9, 101.95, 101.6, 101.7))  # dips under +2R: stays armed, stays put
+    assert pos.stop_loss == pytest.approx(101.5)
+    result = engine.manage(_bar(4, 101.7, 101.7, 101.3, 101.4))
+    assert result.reason == "stop_loss" and result.exit_price == pytest.approx(101.5)   # +3R
+
+
+def test_r_trail_is_armed_by_a_close_not_a_wick():
+    engine = _open(profit_trail_mode="r")
+    engine.manage(_bar(1, 100, 101.5, 100.0, 100.7))     # wick to +3R, close +1.4R
+    assert not engine.position.trail_armed
+
+
+def test_r_trail_short_side_and_configurable_distances():
+    engine = _open("short", profit_trail_mode="r", profit_trail_r=0.5, profit_trail_start_r=1.0)
+    engine.manage(_bar(1, 100, 100.0, 99.4, 99.45))      # +1.1R close
+    assert engine.position.stop_loss == pytest.approx(99.4 + 0.25)
+
+
+def test_unknown_trail_mode_is_refused():
+    with pytest.raises(ValidationError):
+        Settings(profit_trail_mode="atr")
+    with pytest.raises(ValidationError):
+        Settings(profit_trail_r=0)
+
+
+def test_r_trail_hypothesis_is_declared():
+    from maya.research.hypotheses import CATALOG
+    hyp = CATALOG["trail_1r_after_2r"]
+    assert hyp.timeframe == "1m" and not hyp.blocked
 
 
 def test_a_stop_can_only_be_tightened():
@@ -248,7 +307,7 @@ def test_broker_refusal_leaves_the_stop_where_it_was(monkeypatch):
 
 
 def test_profit_protection_numbers_come_from_config():
-    engine = _open(profit_lock_trigger_pct=1.0, profit_trail_pct=0.5)
+    engine = _open(profit_lock_trigger_pct=1.0, profit_trail_mode="pct", profit_trail_pct=0.5)
     engine.manage(_bar(1, 100, 100.7, 100.0, 100.7))      # under the 1.0% trigger
     assert engine.position.stop_loss == 99.5
     engine.manage(_bar(2, 100.7, 101.2, 100.6, 101.1))

@@ -496,12 +496,28 @@ it refuses any move that is not closer to profit.
 
 - When a candle closes 0.6% in favour (`MAYA_PROFIT_LOCK_TRIGGER_PCT`), the
   stop moves to the entry price plus round-trip fees.
-- After that it trails 0.3% behind the best price seen
-  (`MAYA_PROFIT_TRAIL_PCT`).
+- By default nothing else happens. The trade runs to its target or back to
+  the lock.
 
-A move takes effect on the next bar. The trail will close most winners before
-they reach a 1:4 target, so realised R:R will usually be lower than planned.
-The entry gate still requires 1:4.
+`MAYA_PROFIT_TRAIL_MODE` chooses what follows the lock:
+
+| Mode | Behaviour |
+|---|---|
+| `off` (default) | Lock only, no trail. |
+| `pct` | Trail `MAYA_PROFIT_TRAIL_PCT` percent (0.3) behind the best price. |
+| `r` | Trail `MAYA_PROFIT_TRAIL_R` (1.0) times the trade's initial stop distance behind the best price, once a candle has closed `MAYA_PROFIT_TRAIL_START_R` (2.0) times that distance in profit. |
+
+The first version trailed 0.3% by default. That contradicted the 1:4 entry
+rule: with a 0.5% stop the target is 2% away, and a trade cannot travel that
+far on 1m bars without a 0.3% pullback, so winners closed at a fraction of 1R
+while losers stayed at a full 1R. `pct` is kept only so it can be compared.
+
+The `r` trail scales with each trade, since one R is that trade's own stop
+distance. It is unmeasured and off. `python -m maya.research run
+trail_1r_after_2r` tests it against `baseline_1m_setups`, which uses the
+lock-only default.
+
+A move takes effect on the next bar.
 
 ### Lessons memory
 
@@ -1033,6 +1049,7 @@ bar-level rule:
 | `baseline_1m_setups` | 1m | the setups as shipped |
 | `mtf_bias_filter` | 1m | the same setups, taken only with the 15m bias |
 | `cvd_flip` | 15m | sweep and compression setups with the CVD confirmation reversed, nothing else on |
+| `trail_1r_after_2r` | 1m | the same setups with a stop trailing 1R behind once 2R in profit |
 
 `cvd_flip` exists because the README study found positive delta ahead of
 negative returns. `MAYA_CVD_FLIP_SETUPS_ENABLED=true` adds the two flipped
@@ -1244,7 +1261,8 @@ and reports the spec §14.1 go/no-go gate.
 |---|---|---|
 | Research harness, registry, holdout | n/a | unit tests; no hypothesis run on market data |
 | Small-account risk limits | on | unit tests |
-| Profit lock and trailing stop | on | unit tests on invented bars |
+| Profit lock (breakeven plus fees) | on | unit tests on invented bars |
+| Trailing stop, `pct` and `r` modes | off | unit tests on invented bars; hypothesis not run |
 | Lessons table and veto (`learning` node) | on | unit tests; effect on results not measured |
 | 15m bias filter | off | unit tests; hypothesis not run |
 | 15s trigger | off | unit tests on invented ticks; cannot be backtested without tick history |

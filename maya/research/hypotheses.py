@@ -207,3 +207,13 @@ register(Hypothesis(
     timeframe="15m",
     precheck=_kronos_precheck,
 ))
+
+
+register(Hypothesis(
+    id="trail_1r_after_2r",
+    description="The 1m setups with a stop that trails 1R behind the best price once a "
+                "close is 2R in profit, against baseline_1m_setups (lock only).",
+    generate=lambda data: pipeline_samples(
+        data, profit_trail_mode="r", profit_trail_r=1.0, profit_trail_start_r=2.0),
+    timeframe="1m",
+))
