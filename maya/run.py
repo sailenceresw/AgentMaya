@@ -36,6 +36,16 @@ def _guard_live(settings: Settings) -> None:
         logger.warning("MAYA_PERPS_DRY_RUN: orders are validated and priced on Hyperliquid "
                        "{} but NEVER signed or submitted; positions are tracked locally.",
                        "mainnet" if settings.is_live else "testnet")
+    if settings.uses_hl_sdk:
+        if not (settings.hl_api_wallet_key and settings.hl_account_address):
+            logger.critical("MAYA_HL_BROKER=sdk needs HL_API_WALLET_KEY and "
+                            "HL_ACCOUNT_ADDRESS in .env. Aborting.")
+            sys.exit(2)
+        if settings.mode is RunMode.LIVE and not settings.hl_mainnet_allowed:
+            logger.critical("Hyperliquid mainnet through the SDK needs MAYA_HL_MAINNET=true "
+                            "and MAYA_HL_MAINNET_CONFIRM=I_UNDERSTAND_THE_RISK. Refusing.")
+            sys.exit(2)
+        return
     if settings.uses_metamask:
         # The Hyperliquid path is self-custodial — there are no exchange API
         # keys to check here. The equivalent gate (an authenticated `mm`
@@ -66,7 +76,10 @@ def _startup_reconciliation(settings: Settings) -> float:
     if not settings.uses_real_data:
         return settings.start_equity  # sim mode: nothing to check
 
-    if settings.uses_metamask:
+    if settings.uses_hl_sdk:
+        from maya.check_hyperliquid import run_diagnostics
+        logger.info("Running Hyperliquid (SDK) connection check before starting...")
+    elif settings.uses_metamask:
         from maya.check_metamask import run_diagnostics
         logger.info("Running MetaMask / Hyperliquid connection check before starting...")
     else:
@@ -80,7 +93,8 @@ def _startup_reconciliation(settings: Settings) -> float:
     if not report.ok:
         for e in report.errors:
             logger.critical(e)
-        checker = "maya.check_metamask" if settings.uses_metamask else "maya.check_connection"
+        checker = ("maya.check_hyperliquid" if settings.uses_hl_sdk else
+                   "maya.check_metamask" if settings.uses_metamask else "maya.check_connection")
         logger.critical("Connection check failed — refusing to start {} mode. "
                         "Run `python -m {}` for details.",
                         settings.mode.value, checker)

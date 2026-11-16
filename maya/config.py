@@ -102,6 +102,24 @@ class Settings(BaseSettings):
     profit_lock_trigger_pct: float = 0.6
     profit_trail_pct: float = 0.3
 
+    # -- Hyperliquid through the official SDK -------------------------------- #
+    # "mm"  : orders go through the MetaMask Agent Wallet CLI (the original
+    #         path). "sdk": orders go straight to Hyperliquid with
+    #         hyperliquid-python-sdk, signed by an API wallet.
+    hl_broker: str = "mm"
+    # The SDK path talks to testnet unless BOTH of these are set, and mode is
+    # live with the usual MAYA_LIVE_CONFIRM. One flag alone is refused.
+    hl_mainnet: bool = False
+    hl_mainnet_confirm: str = ""
+    # API (agent) wallet private key and the main account's address. An API
+    # wallet can place and cancel orders for the account and cannot withdraw.
+    # Never put the main wallet's key here.
+    hl_api_wallet_key: str = Field(default="", validation_alias="HL_API_WALLET_KEY",
+                                   repr=False)
+    hl_account_address: str = Field(default="", validation_alias="HL_ACCOUNT_ADDRESS")
+    # Seconds to wait for a resting limit entry before cancelling it.
+    hl_entry_timeout_s: float = 20.0
+
     # -- Kronos forecast input (unmeasured, so off) -------------------------- #
     # One extra reading on the SignalObject, computed when a bar of
     # ``kronos_timeframe`` closes. Needs a clone of github.com/shiyu-coder/Kronos
@@ -345,6 +363,13 @@ class Settings(BaseSettings):
             raise ValueError(f"sizing_mode={v!r} must be 'margin', 'risk' or 'risk_pct'")
         return v
 
+    @field_validator("hl_broker")
+    @classmethod
+    def _known_hl_broker(cls, v: str) -> str:
+        if v not in ("mm", "sdk"):
+            raise ValueError(f"hl_broker={v!r} must be 'mm' or 'sdk'")
+        return v
+
     @field_validator("paper_entry_mode")
     @classmethod
     def _known_entry_mode(cls, v: str) -> str:
@@ -454,7 +479,22 @@ class Settings(BaseSettings):
         Binance's public klines endpoint (no keys required) even on the
         Hyperliquid venue — see the basis caveat in ``docs/RUNNING.md``.
         """
-        return self.venue is Venue.HYPERLIQUID and self.uses_real_orders
+        return (self.venue is Venue.HYPERLIQUID and self.uses_real_orders
+                and self.hl_broker == "mm")
+
+    @property
+    def uses_hl_sdk(self) -> bool:
+        """True when orders go to Hyperliquid through the official SDK."""
+        return (self.venue is Venue.HYPERLIQUID and self.uses_real_orders
+                and self.hl_broker == "sdk")
+
+    @property
+    def hl_mainnet_allowed(self) -> bool:
+        """Mainnet needs live mode, the live interlock and both SDK flags."""
+        return (self.mode is RunMode.LIVE
+                and self.live_confirm == "I_UNDERSTAND_THE_RISK"
+                and self.hl_mainnet
+                and self.hl_mainnet_confirm == "I_UNDERSTAND_THE_RISK")
 
 
 class RiskLimits:

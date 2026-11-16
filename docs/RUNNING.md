@@ -517,6 +517,73 @@ logs why. It runs before the risk layer, cannot approve or size anything, and
 `MAYA_LESSONS_VETO_ENABLED=false` turns it off. Its effect on results has not
 been measured.
 
+## Hyperliquid testnet through the official SDK (`MAYA_HL_BROKER=sdk`)
+
+A second way to reach Hyperliquid, beside the MetaMask `mm` CLI. It talks to
+the venue directly with `hyperliquid-python-sdk`, so a call takes about as
+long as an HTTP request. Its purpose is to test order handling on testnet.
+It is not evidence that the strategy makes money.
+
+**Not verified against the venue.** Method names and signatures were checked
+against hyperliquid-python-sdk 0.24.0. Nothing here has been run on the
+Hyperliquid testnet; the tests use a stand-in venue. Run the smoke test below
+before anything else.
+
+Set up:
+
+1. Fund a Hyperliquid **testnet** account from the wallet you use in MetaMask
+   (the testnet app has a faucet).
+2. In the testnet app, create an **API wallet** for that account. An API
+   wallet can place and cancel orders and cannot withdraw.
+3. Put the API wallet's private key and your main account's address in `.env`.
+   Never put the main wallet's key there.
+
+```bash
+pip install hyperliquid-python-sdk
+```
+
+```
+MAYA_MODE=testnet
+MAYA_VENUE=hyperliquid
+MAYA_HL_BROKER=sdk
+HL_API_WALLET_KEY=0x...        # the API wallet, not your MetaMask key
+HL_ACCOUNT_ADDRESS=0x...       # your main account address
+```
+
+```bash
+python -m maya.check_hyperliquid            # balance, mid price, open positions and orders
+python -m maya.check_hyperliquid --smoke    # buy limit at half the mid, cancel, confirm nothing is left
+python -m maya                              # run on testnet
+```
+
+**Testnet by default.** Mainnet is used only when all of these are set:
+`MAYA_MODE=live`, `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`,
+`MAYA_HL_MAINNET=true` and `MAYA_HL_MAINNET_CONFIRM=I_UNDERSTAND_THE_RISK`.
+With any one missing the broker stays on testnet, and live mode refuses to
+start.
+
+**Entry and stop are not atomic.** The entry is one request and the stop is
+another, so for a moment after the fill the position has no stop at the
+venue. What covers that window:
+
+- If the stop is rejected, the position is closed at market at once and the
+  trade is abandoned.
+- A limit entry that rests is waited on for `MAYA_HL_ENTRY_TIMEOUT_S` (20)
+  seconds and then cancelled. It is never left on the book.
+- If the process dies inside the window, the next start finds the position
+  with no stop and closes it. This is the one case where startup acts on a
+  position by itself; a position that has a stop still stops the start with
+  the usual state-mismatch error.
+- Moving a stop places the new one before cancelling the old one.
+
+**What is logged.** Every fill logs price, size, fee and latency next to the
+price the paper broker would have assumed, with the difference in bps.
+
+Limits: there is no background position monitor on this path yet. Stops and
+targets rest at the venue as trigger orders, and the candle loop reconciles
+once a minute. The journal books an exit at the planned price; the real fill
+is in the log line. Market data still comes from Binance klines.
+
 ## Kronos forecast input (optional, off by default)
 
 [Kronos](https://github.com/shiyu-coder/Kronos) is an MIT-licensed model

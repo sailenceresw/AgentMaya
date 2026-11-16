@@ -51,6 +51,13 @@ class PositionMonitor:
     def start(self) -> None:
         if not self.settings.uses_real_orders:
             return  # nothing to poll in sim/paper — the candle loop is authoritative
+        if self.settings.uses_hl_sdk:
+            # No poller for the SDK path yet. Stops and targets rest at the
+            # venue as trigger orders, and the candle loop reconciles through
+            # HyperliquidSDKBroker.close_position, which reads the real fill.
+            logger.info("Position monitor not used on the Hyperliquid SDK path; "
+                        "venue trigger orders hold the stop between candles.")
+            return
         if self.settings.uses_metamask and self.settings.perps_dry_run:
             # Rehearsal positions exist only locally; the venue is flat by
             # design, and polling it would "reconcile" every position shut.

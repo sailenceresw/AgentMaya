@@ -139,6 +139,10 @@ def _close_position_stop(stop_price: float) -> dict:
 def build_broker(settings: Settings) -> Broker:
     if not settings.uses_real_orders:
         return PaperBroker(settings)
+    if settings.uses_hl_sdk:
+        from maya.execution.hyperliquid_broker import HyperliquidSDKBroker
+
+        return HyperliquidSDKBroker(settings)
     if settings.uses_metamask:
         # Imported lazily so sim/paper runs never need the `mm` CLI present,
         # mirroring how ccxt is only imported when actually used.

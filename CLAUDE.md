@@ -55,14 +55,16 @@ maya/
   strategy/        3 setups, confluence, optional LLM veto (Claude, structured verdict)
   agents/          the desk (Atlas/Echo/Flow/Sentinel) — analysis/veto only, never a signal
   risk/            RiskManager: hard limits, kill switch, sizing, liquidation + fee gates
-  execution/       ExecutionEngine; Paper, ccxt (Binance) and MetaMask/Hyperliquid brokers;
+  execution/       ExecutionEngine; Paper, ccxt (Binance), MetaMask/Hyperliquid and
+                   Hyperliquid SDK brokers (hyperliquid_broker.py, testnet by default);
                    PositionMonitor (venue fills between candles)
   journal/         SQLite journal + lessons table; restores risk state across restarts
   learning/        lesson per losing trade; LessonsReviewer veto (no LLM, veto only)
   backtest/        runner (same graph as live), sweep, metrics, plot, Monte Carlo, funding
   research/        hypothesis harness: holdout, registry, corrected t threshold, cost presets
   api/server.py    token-protected monitoring API + phone dashboard + halt switch
-  check_connection.py / check_metamask.py   startup preflights (Binance / Hyperliquid)
+  check_connection.py / check_metamask.py / check_hyperliquid.py
+                   startup preflights (Binance / Hyperliquid via mm / Hyperliquid via SDK)
 android/           Android phone monitor for the API (Java, no dependencies)
 ios/               iOS phone monitor (SwiftUI app package, iOS 17)
 tests/             one test module per area; regression tests name the bug they pin
