@@ -64,6 +64,7 @@ class StrategyEngine:
             swept_low=swept_low,
             breakout_up=breakout_up,
             breakout_down=breakout_down,
+            cvd_reversed=self.settings.cvd_reversed,
         )
 
     def evaluate(self, sig: SignalObject, ctx: SetupContext | None = None) -> TradeIntent | None:

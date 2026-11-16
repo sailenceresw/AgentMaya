@@ -100,6 +100,35 @@ def test_absorption_picks_the_densest_wick_cluster():
     assert ab.level == pytest.approx((98.00 + 98.10 + 98.12 + 98.25) / 4)
 
 
+def test_cvd_reversed_inverts_the_confirmation_sign():
+    """The flipped-sign hypothesis is a single toggle: with cvd_reversed, a
+    long is confirmed by NEGATIVE delta (the study's mean-reversion reading),
+    not positive. Measures end to end because the backtester builds the same
+    context the live engine does."""
+    base = SetupContext(swing_high_15m=110, swing_low_15m=95, range_pct=0.0)
+    rev = SetupContext(swing_high_15m=110, swing_low_15m=95, range_pct=0.0,
+                       cvd_reversed=True)
+
+    up_pos = _tight_then(_bull_breakout(buy=330.0))     # breakout up, delta > 0
+    assert compression_breakout(up_pos, base) is not None     # momentum: fires long
+    assert compression_breakout(up_pos, rev) is None          # reversed: no longer confirms
+
+    up_neg = _tight_then(_bull_breakout(buy=100.0))     # breakout up, delta < 0
+    assert compression_breakout(up_neg, base) is None         # momentum: needs delta > 0
+    assert compression_breakout(up_neg, rev) is not None      # reversed: delta < 0 confirms
+
+
+def test_cvd_reversed_defaults_off_so_live_behaviour_is_unchanged():
+    from maya.config import Settings
+    from maya.strategy.engine import StrategyEngine
+    from maya.signals.models import SignalObject
+
+    assert Settings().cvd_reversed is False
+    ctx = StrategyEngine(Settings()).observe(
+        SignalObject(timestamp=0, symbol="BTCUSDT", price=100.0, high=100.1, low=99.9))
+    assert ctx.cvd_reversed is False
+
+
 def test_compression_breakout_is_off_unless_enabled():
     """It has never been measured (it could not fire before) and uses the
     CVD sign the 24-month study found inverted, so it ships disabled."""

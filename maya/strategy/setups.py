@@ -23,6 +23,24 @@ class SetupContext:
     swept_low: bool = False
     breakout_up: bool = False
     breakout_down: bool = False
+    # Invert every setup's CVD-confirmation sign (Settings.cvd_reversed). Carried
+    # on the context so the setups stay pure functions and the backtester, which
+    # builds the same context, measures exactly what live trades.
+    cvd_reversed: bool = False
+
+
+def _cvd_confirms(delta: float, bullish: bool, ctx: "SetupContext") -> bool:
+    """Does the bar's delta confirm a ``bullish`` (long) / bearish (short) entry?
+
+    Momentum reading: a long wants positive delta, a short negative. The
+    24-month study found that inverted, so ``ctx.cvd_reversed`` flips it — the
+    one place every setup's CVD sign is decided, so the hypothesis is a single
+    toggle rather than four scattered comparisons.
+    """
+    want_positive = bullish
+    if ctx.cvd_reversed:
+        want_positive = not want_positive
+    return delta > 0 if want_positive else delta < 0
 
 
 # Minimum reward:risk each setup demands of its own geometry, before the risk
@@ -99,7 +117,7 @@ def liquidity_sweep_choch(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
 
     # High sweep: buyers' breakout absorbed, sellers regain control (cvd < 0).
     buffer = _stop_buffer(price, sig.atr)
-    if ctx.swept_high and sig.cvd_1m < 0:
+    if ctx.swept_high and _cvd_confirms(sig.cvd_1m, bullish=False, ctx=ctx):
         entry = price
         sl = sig.high + buffer
         tp1 = ctx.swing_low_15m
@@ -108,7 +126,7 @@ def liquidity_sweep_choch(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
                                entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
 
     # Low sweep: sellers' breakdown absorbed, buyers regain control (cvd > 0).
-    if ctx.swept_low and sig.cvd_1m > 0:
+    if ctx.swept_low and _cvd_confirms(sig.cvd_1m, bullish=True, ctx=ctx):
         entry = price
         sl = sig.low - buffer
         tp1 = ctx.swing_high_15m
@@ -153,9 +171,9 @@ def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | 
     rng = sig.range_high - sig.range_low
     mid = (sig.range_high + sig.range_low) / 2
 
-    if price > sig.range_high and sig.cvd_1m > 0:
+    if price > sig.range_high and _cvd_confirms(sig.cvd_1m, bullish=True, ctx=ctx):
         direction, sign = "long", 1
-    elif price < sig.range_low and sig.cvd_1m < 0:
+    elif price < sig.range_low and _cvd_confirms(sig.cvd_1m, bullish=False, ctx=ctx):
         direction, sign = "short", -1
     else:
         return None

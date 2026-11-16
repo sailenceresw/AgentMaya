@@ -444,6 +444,8 @@ venue hours. Testnet first.
 | `MAYA_MAX_FEE_SHARE` | `0.20` | Maximum share of the target move fees may take |
 | `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
 | `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |
+| `MAYA_COMPRESSION_BREAKOUT_ENABLED` | `false` | Enable Setup 3 (unmeasured; measure with a sweep first) |
+| `MAYA_CVD_REVERSED` | `false` | Invert every setup's CVD-confirmation sign to trade/measure the study's mean-reversion reading |
 
 `MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
 requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.

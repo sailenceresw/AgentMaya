@@ -189,6 +189,14 @@ class Settings(BaseSettings):
     # `maya.backtest.sweep` shows it paying after fees.
     compression_breakout_enabled: bool = False
 
+    # The setups confirm a long with positive delta (momentum). The 24-month
+    # study found the opposite — positive delta preceded *negative* forward
+    # returns (mean reversion). Set this to invert every setup's CVD-confirmation
+    # sign end to end, so the flipped-sign hypothesis can be measured through the
+    # real pipeline with `maya.backtest.sweep`. Off by default: live behaviour
+    # stays as measured until a sweep (fees included) shows the flip pays.
+    cvd_reversed: bool = False
+
     # -- Multi-coin scanner (maya.scanner / maya.scan_run) ------------------ #
     # Coins come from Hyperliquid's public market list, busiest first.
     scan_max_coins: int = 15
