@@ -58,6 +58,9 @@ class TradingNodes:
         """Advance any open position against the new candle; journal closes."""
         candle = state["candle"]
         result = self.execution.manage(candle)
+        if self.execution.pop_fill():
+            # A resting post-only entry filled on this candle.
+            self.risk.on_trade_opened()
         if result is not None:
             self.journal.record(result, result.position.confluences)
             self.risk.on_trade_closed(result.pnl_usdt, candle.timestamp)
@@ -81,7 +84,7 @@ class TradingNodes:
         # position closes...
         ctx = self.strategy.observe(signal)
         # ...but no new entries while a position is open (single-position system).
-        if self.execution.has_position:
+        if self.execution.busy:
             return {"intent": None}
         intent = self.strategy.evaluate(signal, ctx)
         if intent is not None and self.settings.mtf_15s_trigger_enabled:

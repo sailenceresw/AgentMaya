@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from maya.data.models import Candle
-from maya.research.costs import PRESETS, CostModel, Sample
+from maya.research.costs import PRESETS, CostModel, Sample, SampleList
 from maya.research.registry import HypothesisRegistry
 from maya.research.stats import BASE_T_THRESHOLD, corrected_threshold, mean, t_stat
 
@@ -107,6 +107,7 @@ class Report:
     sign_share: float = 0.0
     passed: bool = False
     reason: str = ""
+    notes: list[str] = field(default_factory=list)
 
     def format(self) -> str:
         subs = "  ".join("   n/a" if v is None else f"{v:+6.2f}" for v in self.subperiod_net_bps)
@@ -124,6 +125,7 @@ class Report:
         if self.subperiod_net_bps:
             lines += [f"sub-periods     {subs}  (mean net bps)",
                       f"sign share      {self.sign_share:.0%} of sub-periods positive"]
+        lines += [f"note            {n}" for n in self.notes]
         lines.append(f"result          {'PASS' if self.passed else 'FAIL'}: {self.reason}")
         return "\n".join(lines)
 
@@ -134,7 +136,8 @@ def _base_report(hyp: Hypothesis, kind: str, samples: list[Sample],
     filled, missed = cost.fill(samples, seed=seed)
     net = [cost.net(s.gross_return) for s in filled]
     rep = Report(hyp.id, kind, cost.name, cost.round_trip_bps,
-                 trades=len(filled), missed=missed)
+                 trades=len(filled), missed=missed,
+                 notes=list(getattr(samples, "notes", [])))
     if net:
         wins = [r for r in net if r > 0]
         losses = [r for r in net if r < 0]
@@ -214,7 +217,9 @@ def run_holdout(hyp: Hypothesis, data: ResearchData,
     try:
         # The generator sees earlier candles so indicators can warm up, but
         # only trades entered inside the holdout window are judged.
-        samples = [s for s in hyp.generate(data._everything()) if s.timestamp >= data.cutoff]
+        generated = hyp.generate(data._everything())
+        samples = SampleList((s for s in generated if s.timestamp >= data.cutoff),
+                             getattr(generated, "notes", []))
         rep, _, _ = _base_report(hyp, "holdout", samples, seed=11)
     except Exception as exc:
         registry.record(hyp.id, hyp.description, None, False,

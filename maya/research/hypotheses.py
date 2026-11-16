@@ -7,7 +7,7 @@ row for the old result stays either way.
 from __future__ import annotations
 
 from maya.data.models import Candle
-from maya.research.costs import Sample
+from maya.research.costs import Sample, SampleList
 from maya.research.harness import Hypothesis
 from maya.signals.indicators import delta_for
 
@@ -77,7 +77,7 @@ def pipeline_samples(data: dict[str, list[Candle]], timeframe: str = "1m",
     from maya.config import get_settings
 
     base = get_settings()
-    out: list[Sample] = []
+    out = SampleList()
     for symbol, candles in data.items():
         settings = base.model_copy(update={
             "symbol": symbol, "timeframe": timeframe, "mode": base.mode.SIM,
@@ -85,7 +85,8 @@ def pipeline_samples(data: dict[str, list[Candle]], timeframe: str = "1m",
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         try:
-            run_backtest(settings, iter(candles), journal_path=path, progress_every=0)
+            metrics = run_backtest(settings, iter(candles), journal_path=path,
+                                   progress_every=0)
             conn = sqlite3.connect(path)
             rows = conn.execute(
                 "SELECT timestamp_entry, pnl_usdt, fees_usdt, position_size, entry_price "
@@ -97,6 +98,13 @@ def pipeline_samples(data: dict[str, list[Candle]], timeframe: str = "1m",
             notional = (size or 0.0) * (entry or 0.0)
             if notional > 0:
                 out.append(Sample(int(ts), (pnl + (fees or 0.0)) / notional))
+        if metrics.maker:
+            m = metrics.maker
+            out.notes.append(
+                f"{symbol} post-only: {m['placed']} placed, {m['filled']} filled, "
+                f"{m['missed']} missed (missed share {m['missed_share']}); forward "
+                f"{m['filled_forward_bps']} bps filled vs {m['missed_forward_bps']} bps "
+                f"missed, adverse selection {m['adverse_selection_bps']} bps")
     return out
 
 
@@ -133,5 +141,18 @@ register(Hypothesis(
     generate=lambda data: pipeline_samples(
         data, timeframe="15m", cvd_flip_setups_enabled=True,
         setups_only="liquidity_sweep_choch_cvd_flip,compression_breakout_cvd_flip"),
+    timeframe="15m",
+))
+
+
+register(Hypothesis(
+    id="maker_cvd_reversion",
+    description="The cvd_flip setups entered with simulated post-only orders "
+                "(60% fill when price trades through, one-candle wait), maker costs.",
+    generate=lambda data: pipeline_samples(
+        data, timeframe="15m", cvd_flip_setups_enabled=True,
+        setups_only="liquidity_sweep_choch_cvd_flip,compression_breakout_cvd_flip",
+        paper_entry_mode="post_only"),
+    cost="maker_filled",
     timeframe="15m",
 ))

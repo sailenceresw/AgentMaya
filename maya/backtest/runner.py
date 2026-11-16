@@ -91,6 +91,8 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
         "SELECT * FROM trades ORDER BY timestamp_exit"
     ).fetchall()
     metrics = compute_metrics(daily_equity, trade_rows, settings.start_equity)
+    if nodes.execution.post_only:
+        metrics.maker = nodes.execution.maker.summary()
     journal.close()
     return metrics
 

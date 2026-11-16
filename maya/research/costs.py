@@ -33,6 +33,15 @@ class Sample:
     gross_return: float
 
 
+class SampleList(list):
+    """A list of samples that can carry notes into the report, such as the
+    missed-fill share from a generator that simulated its own fills."""
+
+    def __init__(self, samples=(), notes: list[str] | None = None) -> None:
+        super().__init__(samples)
+        self.notes: list[str] = list(notes or [])
+
+
 @dataclass(frozen=True)
 class CostModel:
     name: str
@@ -71,7 +80,11 @@ TAKER = CostModel("taker", fee_bps_per_side=4.0, slippage_bps_per_side=1.0)
 MAKER = CostModel("maker", fee_bps_per_side=2.0, slippage_bps_per_side=0.0,
                   fill_probability=0.6)
 
-PRESETS: dict[str, CostModel] = {m.name: m for m in (TAKER, MAKER)}
+# For hypotheses whose generator already simulated the fills (the post-only
+# paper broker). Same maker fee, no second haircut on top.
+MAKER_FILLED = CostModel("maker_filled", fee_bps_per_side=2.0, slippage_bps_per_side=0.0)
+
+PRESETS: dict[str, CostModel] = {m.name: m for m in (TAKER, MAKER, MAKER_FILLED)}
 
 
 def custom(fee_bps_per_side: float, slippage_bps_per_side: float,

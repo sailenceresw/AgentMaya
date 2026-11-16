@@ -29,6 +29,8 @@ class BacktestMetrics:
     total_fees: float = 0.0
     # (day_start_ms, equity) per processed day, oldest first — for charts.
     equity_curve: list[tuple[int, float]] = field(default_factory=list)
+    # Post-only simulation summary (ExecutionEngine.maker), or None.
+    maker: dict | None = None
 
     @property
     def gross_pnl_usdt(self) -> float:
