@@ -20,6 +20,10 @@ MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya
 
 # Tests:
 python -m pytest -q
+
+# Declared research hypotheses and what has been tested:
+python -m maya.research list
+python -m maya.research registry
 ```
 
 ## Implementation
@@ -110,7 +114,7 @@ CVD-derived signal a function of the generator rather than the market.
 
 ## Venues
 
-Execution can target either of two mutually exclusive venues (`MAYA_VENUE`);
+Execution targets one venue per run (`MAYA_VENUE`);
 the signal, strategy and risk layers are venue-agnostic and unchanged by the
 choice.
 
@@ -118,6 +122,7 @@ choice.
 |---|---|---|---|
 | `binance` (default) | Binance USD-M perps via ccxt | API key/secret | The tested path |
 | `hyperliquid` | Hyperliquid perps via the MetaMask Agent Wallet `mm` CLI (v7.1) | Self-custodial wallet, no exchange keys | Unit-tested against the v7.1 CLI, **no venue hours yet** |
+| `hyperliquid` with `MAYA_HL_BROKER=sdk` | Hyperliquid perps via the official Python SDK, testnet by default | API wallet key (cannot withdraw) | Unit-tested against a fake venue, **never run against the venue** |
 
 A MetaMask wallet cannot trade Binance and a Binance key cannot trade
 Hyperliquid — selecting `hyperliquid` moves execution to a different market,
@@ -155,6 +160,78 @@ Two findings worth knowing before changing anything:
 
 Do not tune thresholds or add indicators to fix this — nine factors have been
 measured and none discriminate. The open directions are: flip the CVD sign and
-re-test, move to maker execution, or change the premise entirely.
+re-test, move to maker execution, or change the premise entirely. The first
+two are now declared as hypotheses (`cvd_flip`, `maker_cvd_reversion`) and
+have not been run; see the results table below.
 
-> ⚠️ **Disclaimer:** Algorithmic trading involves substantial risk of capital loss. This repository contains architecture and design documentation only and does not guarantee profitability.
+## Results: what has been tested since
+
+Every new idea goes through the research harness (`python -m maya.research`),
+which records each test in a registry. A hypothesis passes only with at least
+100 trades, a mean return above zero after costs, a positive mean in at least
+6 of 8 sub-periods, and a t-stat above a threshold that rises with every test
+run. A pass then has to hold on the newest 120 days, which are read once.
+
+| Hypothesis | Trades | Net after costs | Corrected t-stat | Holdout | Result |
+|---|---|---|---|---|---|
+| `cvd_follow_baseline` | | | | | not run |
+| `baseline_1m_setups` | | | | | not run |
+| `mtf_bias_filter` | | | | | not run |
+| `cvd_flip` | | | | | not run |
+| `maker_cvd_reversion` | | | | | not run |
+| `kronos_small_15m` | | | | | not run (needs Kronos installed) |
+| `mtf_15s_trigger` | | | | | blocked: needs trade-level history |
+
+**Nothing in this table has passed, and nothing has failed, because nothing
+has been run.** The harness and the hypotheses were written without access to
+market data. The only measured result in this repository is still the study
+above: no predictive signal, best profit factor 0.38.
+
+Fill the table in from `python -m maya.research registry` after running each
+one. A failed row stays in the table.
+
+What was added alongside the harness, all off by default unless noted:
+
+- Risk rules for a small account: 3% risk per trade, 10 trades a day, 10%
+  daily loss limit, 10x leverage and notional cap. These are on, and three of
+  them are looser than before.
+- A stop that locks in breakeven plus fees at +0.6% and then trails by 0.3%.
+  On.
+- A lesson saved for every losing trade, and a veto on setups whose context
+  has a losing record. On.
+- A 15m bias filter and a 15-second order-flow trigger.
+- Two setups with the CVD confirmation reversed.
+- Post-only entry simulation for paper and backtest runs.
+- A Kronos forecast as one more input to the signal agent.
+- A Hyperliquid testnet broker on the official SDK. Not yet run against the
+  venue.
+
+Details for each are in [`docs/RUNNING.md`](docs/RUNNING.md).
+
+## Roadmap
+
+Open, in the order they should happen:
+
+1. Download the data and run the runnable hypotheses. Record every result.
+2. Run `python -m maya.check_hyperliquid --smoke` on Hyperliquid testnet and
+   fix whatever the first real responses show.
+3. Decide whether the weekly loss limit (8%) should stay tighter than the
+   daily one (10%).
+4. Get trade-level history so `mtf_15s_trigger` can be tested.
+5. Install Kronos and run `kronos_small_15m`.
+6. Add a position monitor for the Hyperliquid SDK path, so exits are booked
+   at the real fill price.
+7. Re-run the Monte Carlo figures in `docs/RUNNING.md` under the current
+   limits.
+
+Not before real money:
+
+- At least one hypothesis passes the corrected threshold and the holdout,
+  after costs.
+- Testnet results match the simulator within a small tolerance.
+- At least four weeks of paper trading with no risk-limit breach.
+
+If nothing passes, the premise needs changing. Tuning thresholds until
+something passes is not a result.
+
+> ⚠️ **Disclaimer:** Algorithmic trading involves substantial risk of capital loss. The code here runs and can place real orders, and nothing in it has been shown to be profitable.
