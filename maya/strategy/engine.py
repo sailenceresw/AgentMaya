@@ -11,6 +11,7 @@ from collections import deque
 from loguru import logger
 
 from maya.config import RiskLimits, Settings
+from maya.signals import mtf
 from maya.signals import technicals as ta
 from maya.signals.models import SignalObject
 from maya.strategy import setups as setup_mod
@@ -102,6 +103,13 @@ class StrategyEngine:
 
         if best is None:
             return None
+
+        if self.settings.mtf_bias_filter_enabled:
+            bias = mtf.bias(sig.htf.get(mtf.BIAS_TIMEFRAME))
+            if bias != best.direction:
+                logger.debug("15m bias is {}; dropping {} {}", bias, best.direction,
+                             best.setup_name)
+                return None
 
         approved, reason = self.llm.review(best, sig)
         if not approved:

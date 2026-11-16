@@ -39,6 +39,8 @@ class HTFContext:
     support: Optional[float] = None       # nearest confirmed swing low below
     resistance: Optional[float] = None    # nearest confirmed swing high above
     candles: int = 0                      # closed candles available
+    # VWAP of the UTC day the last closed bar belongs to (maya.signals.mtf).
+    session_vwap: Optional[float] = None
 
 
 @dataclass

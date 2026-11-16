@@ -54,3 +54,72 @@ register(Hypothesis(
     description="Reference: trade in the direction of each bar's delta, hold one bar, taker costs.",
     generate=_cvd_follow,
 ))
+
+
+# -- pipeline hypotheses ----------------------------------------------------- #
+def pipeline_samples(data: dict[str, list[Candle]], **overrides) -> list[Sample]:
+    """Run the real graph over ``data`` and return its trades as samples.
+
+    This is the backtester's own loop (same nodes, same risk layer), so a
+    hypothesis about the pipeline tests the pipeline. Gross return is taken
+    per trade from the journal, before fees; the harness charges its own cost
+    model so every hypothesis is costed the same way.
+
+    The lessons veto is switched off: it depends on the order trades happen
+    in, which would make one hypothesis's result depend on its own history.
+    """
+    import os
+    import sqlite3
+    import tempfile
+
+    from maya.backtest.runner import run_backtest
+    from maya.config import get_settings
+
+    base = get_settings()
+    out: list[Sample] = []
+    for symbol, candles in data.items():
+        settings = base.model_copy(update={
+            "symbol": symbol, "timeframe": "1m", "mode": base.mode.SIM,
+            "llm_enabled": False, "lessons_veto_enabled": False, **overrides})
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            run_backtest(settings, iter(candles), journal_path=path, progress_every=0)
+            conn = sqlite3.connect(path)
+            rows = conn.execute(
+                "SELECT timestamp_entry, pnl_usdt, fees_usdt, position_size, entry_price "
+                "FROM trades").fetchall()
+            conn.close()
+        finally:
+            os.unlink(path)
+        for ts, pnl, fees, size, entry in rows:
+            notional = (size or 0.0) * (entry or 0.0)
+            if notional > 0:
+                out.append(Sample(int(ts), (pnl + (fees or 0.0)) / notional))
+    return out
+
+
+register(Hypothesis(
+    id="baseline_1m_setups",
+    description="Reference: the existing 1m setups as shipped, no multi-timeframe filter.",
+    generate=lambda data: pipeline_samples(data),
+    timeframe="1m",
+))
+
+register(Hypothesis(
+    id="mtf_bias_filter",
+    description="Existing 1m setups, taken only in the direction of the 15m bias "
+                "(session VWAP side plus swing structure).",
+    generate=lambda data: pipeline_samples(data, mtf_bias_filter_enabled=True),
+    timeframe="1m",
+))
+
+register(Hypothesis(
+    id="mtf_15s_trigger",
+    description="15m bias, 1m setup and a 15s order-flow trigger together.",
+    generate=lambda data: pipeline_samples(
+        data, mtf_bias_filter_enabled=True, mtf_15s_trigger_enabled=True),
+    timeframe="1m",
+    blocked="needs trade-level (aggTrade) history; the kline cache has no ticks, "
+            "and 15s bars are not faked from 1m candles",
+))

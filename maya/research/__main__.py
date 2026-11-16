@@ -47,7 +47,8 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     p.add_argument("command", choices=["list", "run", "holdout", "registry"])
     p.add_argument("hypothesis_id", nargs="?")
     p.add_argument("--symbols", default="BTCUSDT,ETHUSDT,SOLUSDT")
-    p.add_argument("--timeframe", default="15m")
+    p.add_argument("--timeframe", default=None,
+                   help="bar size; defaults to the one the hypothesis declares")
     p.add_argument("--start", default="2024-08-10")
     p.add_argument("--end", default="2026-08-09")
     p.add_argument("--db", default="maya_journal.db")
@@ -55,7 +56,8 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
 
     if a.command == "list":
         for h in CATALOG.values():
-            print(f"{h.id:<28}{h.cost:<7}{h.description}")
+            flag = "  [blocked: " + h.blocked + "]" if h.blocked else ""
+            print(f"{h.id:<28}{h.cost:<7}{h.timeframe:<5}{h.description}{flag}")
         return 0
 
     registry = HypothesisRegistry(a.db)
@@ -73,8 +75,11 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
               file=sys.stderr)
         return 2
     hyp = CATALOG[a.hypothesis_id]
+    if hyp.blocked:
+        print(f"blocked: {hyp.id} cannot be tested yet: {hyp.blocked}", file=sys.stderr)
+        return 4
     data = load_data([s.strip() for s in a.symbols.split(",") if s.strip()],
-                     a.timeframe, a.start, a.end, loader=loader)
+                     a.timeframe or hyp.timeframe, a.start, a.end, loader=loader)
     try:
         rep = (run_research if a.command == "run" else run_holdout)(hyp, data, registry)
     except (HoldoutAlreadyUsed, PermissionError) as exc:
