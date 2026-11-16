@@ -8,8 +8,9 @@ duration-based force closes.
 """
 from __future__ import annotations
 
+import random
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from loguru import logger
 
@@ -37,6 +38,51 @@ class TradeResult:
     result: str            # win / loss / breakeven
     exit_ts: int
     reason: str
+
+
+@dataclass
+class PendingOrder:
+    """A simulated post-only entry resting at ``intent.entry_price``."""
+
+    intent: TradeIntent
+    decision: RiskDecision
+    placed_ts: int
+    outcome: "_Outcome"
+    waited: int = 0
+
+
+@dataclass
+class _Outcome:
+    """Tracks where price went after an order was placed, filled or not."""
+
+    filled: bool
+    direction: str
+    level: float
+    candles_left: int
+
+
+@dataclass
+class MakerStats:
+    placed: int = 0
+    filled: int = 0
+    missed: int = 0
+    # Signed return from the order's level to the close ``horizon`` candles
+    # after it was placed, in the order's direction.
+    filled_forward: list[float] = field(default_factory=list)
+    missed_forward: list[float] = field(default_factory=list)
+
+    def summary(self) -> dict:
+        def mean_bps(xs: list[float]) -> float | None:
+            return round(sum(xs) / len(xs) * 10_000, 2) if xs else None
+        f, m = mean_bps(self.filled_forward), mean_bps(self.missed_forward)
+        return {
+            "placed": self.placed, "filled": self.filled, "missed": self.missed,
+            "missed_share": round(self.missed / self.placed, 4) if self.placed else None,
+            "filled_forward_bps": f, "missed_forward_bps": m,
+            # Positive means the orders that did not fill went on to do better
+            # than the ones that did: the fills were the adverse ones.
+            "adverse_selection_bps": round(m - f, 2) if f is not None and m is not None else None,
+        }
 
 
 def flatten_on_shutdown(execution: "ExecutionEngine", risk, journal, price: float,
@@ -68,6 +114,14 @@ class ExecutionEngine:
             settings.venue.value == "hyperliquid" else "limit"
         self.broker = build_broker(settings)
         self.position: Position | None = None
+        # Post-only simulation (paper path only; see Settings.paper_entry_mode).
+        self.post_only = (settings.paper_entry_mode == "post_only"
+                          and not settings.uses_real_orders)
+        self.pending: PendingOrder | None = None
+        self.maker = MakerStats()
+        self._outcomes: list[_Outcome] = []
+        self._fill_rng = random.Random(settings.maker_seed)
+        self._filled_this_candle = False
         # Guards `position` against a race between the candle-driven graph
         # thread (manage/open) and the background PositionMonitor thread
         # (testnet/live), which can both observe/close a position.
@@ -77,9 +131,34 @@ class ExecutionEngine:
     def has_position(self) -> bool:
         return self.position is not None
 
+    @property
+    def busy(self) -> bool:
+        """A position is open or an entry order is resting. Either way the
+        strategy must not propose another trade."""
+        return self.position is not None or self.pending is not None
+
+    def pop_fill(self) -> bool:
+        """True once after a resting order filled, so the caller can tell the
+        risk manager a trade opened. The fill happens inside :meth:`manage`,
+        not :meth:`open`, which is why it needs its own signal."""
+        filled, self._filled_this_candle = self._filled_this_candle, False
+        return filled
+
     def open(self, intent: TradeIntent, decision: RiskDecision, ts: int) -> bool:
         with self.lock:
-            if self.has_position:
+            if self.busy:
+                return False
+            if self.post_only:
+                # Rest the order; manage() decides on later candles whether it
+                # filled. Returning False keeps the caller from counting a
+                # trade that has not happened yet.
+                outcome = _Outcome(False, intent.direction, intent.entry_price,
+                                   self.settings.maker_adverse_horizon_candles)
+                self.pending = PendingOrder(intent, decision, ts, outcome)
+                self.maker.placed += 1
+                self._outcomes.append(outcome)
+                logger.debug("post-only {} {} resting at {:.2f}", intent.direction,
+                             intent.symbol, intent.entry_price)
                 return False
             ok = self.broker.open_position(intent, decision.quantity, decision.leverage)
             if not ok:
@@ -133,6 +212,13 @@ class ExecutionEngine:
         will be ``None`` here and this is a harmless no-op.
         """
         with self.lock:
+            if self.post_only:
+                self._mark_outcomes(candle)
+                if self.pending is not None:
+                    # A fill opens the position at the end of this candle; its
+                    # stop and target are first checked against the next one.
+                    self._work_pending(candle)
+                    return None
             pos = self.position
             if pos is None:
                 return None
@@ -157,6 +243,52 @@ class ExecutionEngine:
             if dur_h >= RiskLimits.MAX_POSITION_DURATION_HOURS:
                 return self._close(candle.close, candle.timestamp, "max_duration")
             return None
+
+    def _work_pending(self, candle: Candle) -> None:
+        """Fill, keep waiting on, or cancel the resting entry order.
+
+        A buy at ``level`` can only have filled if someone sold below it, so
+        the candle must trade *through* the level, not just touch it. Even
+        then the order may have been too far back in the queue, which is what
+        the fill probability stands for.
+        """
+        order = self.pending
+        assert order is not None
+        intent, level = order.intent, order.intent.entry_price
+        through = candle.low < level if intent.direction == "long" else candle.high > level
+        if through and self._fill_rng.random() < self.settings.maker_fill_probability:
+            d = order.decision
+            self.broker.open_position(intent, d.quantity, d.leverage)
+            self.position = Position(
+                symbol=intent.symbol, direction=intent.direction,
+                setup_name=intent.setup_name, entry_price=level,
+                stop_loss=intent.stop_loss, take_profit=intent.take_profit_1,
+                quantity=d.quantity, notional=d.position_notional, leverage=d.leverage,
+                opened_ts=candle.timestamp, confluence_score=intent.confluence_score,
+                rr_planned=intent.expected_rr, confluences=list(intent.confluences))
+            self.pending = None
+            self.maker.filled += 1
+            self._filled_this_candle = True
+            order.outcome.filled = True
+            return
+        order.waited += 1
+        if order.waited >= self.settings.maker_order_ttl_candles:
+            self.pending = None
+            self.maker.missed += 1
+            logger.debug("post-only {} {} expired unfilled", intent.direction, intent.symbol)
+
+    def _mark_outcomes(self, candle: Candle) -> None:
+        still: list[_Outcome] = []
+        for o in self._outcomes:
+            o.candles_left -= 1
+            if o.candles_left > 0:
+                still.append(o)
+                continue
+            fwd = (candle.close - o.level) / o.level
+            if o.direction == "short":
+                fwd = -fwd
+            (self.maker.filled_forward if o.filled else self.maker.missed_forward).append(fwd)
+        self._outcomes = still
 
     def _protect_profit(self, pos: Position, candle: Candle) -> None:
         """Profit lock, then trailing stop. Takes effect from the NEXT bar,

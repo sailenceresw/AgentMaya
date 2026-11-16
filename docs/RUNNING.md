@@ -517,6 +517,37 @@ logs why. It runs before the risk layer, cannot approve or size anything, and
 `MAYA_LESSONS_VETO_ENABLED=false` turns it off. Its effect on results has not
 been measured.
 
+## Post-only entry simulation (paper, sim and backtest)
+
+By default the paper broker fills every limit entry at once at the intent
+price. That is the optimistic case. `MAYA_PAPER_ENTRY_MODE=post_only` rests
+the order instead:
+
+- It fills only if a later candle trades through the entry price (a touch is
+  not enough), and then only with probability `MAYA_MAKER_FILL_PROBABILITY`
+  (default 0.6, seeded by `MAYA_MAKER_SEED`).
+- It waits `MAYA_MAKER_ORDER_TTL_CANDLES` candles (default 1), then is
+  cancelled and counted as missed.
+- A fill opens the position at the end of that candle. Stop and target are
+  first checked on the next one.
+- The trade counts towards the daily cap when it fills, not when the order is
+  placed. No new setup is taken while an order rests.
+
+Every order, filled or missed, is marked `MAYA_MAKER_ADVERSE_HORIZON_CANDLES`
+candles after it was placed. `BacktestMetrics.maker` then reports placed,
+filled, missed, the missed share, and the mean forward return of filled
+against missed orders. A positive `adverse_selection_bps` means the orders
+that did not fill went on to do better than the ones that did.
+
+The 0.6 fill probability is an assumption. Candles cannot show queue
+position, so this is a rough model of a resting order, not a book replay.
+Real-order modes ignore the setting.
+
+`maker_cvd_reversion` in the research harness runs the `cvd_flip` setups this
+way with the `maker_filled` cost preset (2 bps a side, no second fill
+haircut), and its report carries the missed share and adverse selection
+figures as notes.
+
 ## Multi-timeframe layers (15m bias, 1m staging, 15s trigger)
 
 Two optional layers sit around the existing 1m setups. Both are off by

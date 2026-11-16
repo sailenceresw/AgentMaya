@@ -102,6 +102,23 @@ class Settings(BaseSettings):
     profit_lock_trigger_pct: float = 0.6
     profit_trail_pct: float = 0.3
 
+    # -- paper entry simulation --------------------------------------------- #
+    # "immediate": a limit entry fills at once at the intent price (the old
+    #              behaviour, and the optimistic case).
+    # "post_only": the order rests at the entry price and fills only if a
+    #              later candle trades through it, and then only with
+    #              ``maker_fill_probability``: trading through a level does
+    #              not mean an order at the back of the queue was reached.
+    # Sim, paper and backtest only. Real-order brokers ignore this.
+    paper_entry_mode: str = "immediate"
+    maker_fill_probability: float = 0.6
+    # Candles a resting order waits before it is cancelled and counted missed.
+    maker_order_ttl_candles: int = 1
+    # Candles after the order was placed at which its outcome is marked, for
+    # comparing filled orders with missed ones.
+    maker_adverse_horizon_candles: int = 5
+    maker_seed: int = 7
+
     # -- multi-timeframe layers (both unmeasured, so both off) -------------- #
     # Bias filter: a setup may only fire in the direction of the 15m bias
     # (price against session VWAP plus swing structure). No bias, no trade.
@@ -310,6 +327,20 @@ class Settings(BaseSettings):
     def _known_sizing_mode(cls, v: str) -> str:
         if v not in ("margin", "risk", "risk_pct"):
             raise ValueError(f"sizing_mode={v!r} must be 'margin', 'risk' or 'risk_pct'")
+        return v
+
+    @field_validator("paper_entry_mode")
+    @classmethod
+    def _known_entry_mode(cls, v: str) -> str:
+        if v not in ("immediate", "post_only"):
+            raise ValueError(f"paper_entry_mode={v!r} must be 'immediate' or 'post_only'")
+        return v
+
+    @field_validator("maker_fill_probability")
+    @classmethod
+    def _fill_probability_in_range(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError("maker_fill_probability must be in (0, 1]")
         return v
 
     @field_validator("risk_per_trade_pct")
