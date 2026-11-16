@@ -219,3 +219,58 @@ def test_cli_holdout_refused_without_a_pass(tmp_path, capsys):
     code = cli.main(["holdout", "cvd_follow_baseline", "--symbols", "BTCUSDT",
                      "--db", str(tmp_path / "j.db")], loader=loader)
     assert code == 3 and "refused" in capsys.readouterr().err
+
+
+# -- blocked-hypotheses memory ---------------------------------------------- #
+def test_a_failed_test_stores_a_short_lesson_and_a_pass_stores_none(data, registry):
+    run_research(Hypothesis("thin", "", _edge(5.0)), data, registry)
+    run_research(Hypothesis("strong", "", _edge(30.0)), data, registry)
+    thin, strong = registry.rows()
+    assert thin.lesson.startswith("thin blocked in research: mean net")
+    assert ";" not in thin.lesson                     # first clause only
+    assert strong.lesson == ""
+    assert [r.id for r in registry.failures()] == ["thin"]
+
+
+def test_holdout_failure_lesson_says_where_it_failed():
+    from maya.research.registry import make_lesson
+    assert make_lesson("x", "t-stat +0.40 below 2.00; other", "holdout") == \
+        "x blocked on the holdout: t-stat +0.40 below 2.00"
+
+
+def test_registry_from_before_the_lesson_column_is_upgraded(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE hypotheses (row INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT "
+                 "NULL, description TEXT, tested_at INTEGER NOT NULL, t_stat REAL, passed_gate "
+                 "INTEGER NOT NULL, reason TEXT, kind TEXT NOT NULL DEFAULT 'research')")
+    conn.execute("INSERT INTO hypotheses (id, tested_at, passed_gate, reason) "
+                 "VALUES ('old', 1, 0, 'only 3 trades, needs 100')")
+    conn.commit()
+    conn.close()
+    reg = HypothesisRegistry(path)
+    assert reg.rows()[0].lesson == "" and reg.count_tests() == 1
+    reg.record("new", "", 0.1, False, "mean net -1.00 bps is not above zero after costs")
+    assert reg.rows()[1].lesson.startswith("new blocked")
+
+
+def test_cli_lists_failures_and_refuses_a_repeat(tmp_path, capsys):
+    db = str(tmp_path / "j.db")
+    loader = lambda settings, start, end, cache_path=None: _rows()  # noqa: E731
+    args = ["run", "cvd_follow_baseline", "--symbols", "BTCUSDT", "--db", db]
+    assert cli.main(["failures", "--db", db]) == 0
+    assert "no failed hypotheses" in capsys.readouterr().out
+
+    assert cli.main(args, loader=loader) == 1             # fails on the invented series
+    capsys.readouterr()
+    assert cli.main(["failures", "--db", db]) == 0
+    assert "cvd_follow_baseline blocked in research" in capsys.readouterr().out
+
+    assert cli.main(args, loader=loader) == 3             # same id again: refused
+    assert "already tested" in capsys.readouterr().err
+    assert len(HypothesisRegistry(db).rows()) == 1        # and no second row
+
+    assert cli.main(args + ["--rerun"], loader=loader) == 1
+    out = capsys.readouterr().out
+    assert "past failures" in out and len(HypothesisRegistry(db).rows()) == 2

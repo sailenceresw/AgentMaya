@@ -4,6 +4,7 @@
     python -m maya.research run <hypothesis_id> [--symbols ...] [--timeframe 15m]
     python -m maya.research holdout <hypothesis_id>
     python -m maya.research registry
+    python -m maya.research failures
 
 Data is Binance USD-M public klines, cached under ``data/`` (see
 ``maya.data.download``). The last 120 days of the range are the holdout.
@@ -22,7 +23,7 @@ from maya.backtest.data_loader import (
 from maya.config import get_settings
 from maya.research.harness import ResearchData, run_holdout, run_research
 from maya.research.hypotheses import CATALOG
-from maya.research.registry import HoldoutAlreadyUsed, HypothesisRegistry
+from maya.research.registry import HoldoutAlreadyUsed, HypothesisRegistry, make_lesson
 from maya.research.stats import corrected_threshold
 
 
@@ -44,7 +45,7 @@ def load_data(symbols: list[str], timeframe: str, start: str, end: str,
 
 def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     p = argparse.ArgumentParser(prog="python -m maya.research", description=__doc__.split("\n")[0])
-    p.add_argument("command", choices=["list", "run", "holdout", "registry"])
+    p.add_argument("command", choices=["list", "run", "holdout", "registry", "failures"])
     p.add_argument("hypothesis_id", nargs="?")
     p.add_argument("--symbols", default="BTCUSDT,ETHUSDT,SOLUSDT")
     p.add_argument("--timeframe", default=None,
@@ -52,6 +53,8 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     p.add_argument("--start", default="2024-08-10")
     p.add_argument("--end", default="2026-08-09")
     p.add_argument("--db", default="maya_journal.db")
+    p.add_argument("--rerun", action="store_true",
+                   help="test an id that already has a research row (adds another row)")
     a = p.parse_args(argv)
 
     if a.command == "list":
@@ -70,6 +73,14 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
             print(f"{r.id:<28}{r.kind:<9}{t:>7}  {'PASS' if r.passed_gate else 'FAIL'}  {r.reason}")
         return 0
 
+    if a.command == "failures":
+        failed = registry.failures()
+        if not failed:
+            print("no failed hypotheses on record")
+        for r in failed:
+            print(r.lesson or make_lesson(r.id, r.reason, r.kind))
+        return 0
+
     if a.hypothesis_id not in CATALOG:
         print(f"unknown hypothesis {a.hypothesis_id!r}; try: python -m maya.research list",
               file=sys.stderr)
@@ -81,6 +92,20 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     if hyp.precheck is not None and (why := hyp.precheck()):
         print(f"cannot run {hyp.id} here: {why}", file=sys.stderr)
         return 4
+    earlier = registry.research_rows_for(hyp.id)
+    if a.command == "run" and earlier and not a.rerun:
+        last = earlier[-1]
+        verdict = "passed" if last.passed_gate else (last.lesson or "failed: " + last.reason)
+        print(f"refused: {hyp.id} was already tested ({verdict}). A rerun on the same data "
+              "gives the same answer and raises the threshold for everything after it. "
+              "Use --rerun if the data or the code changed.", file=sys.stderr)
+        return 3
+    if a.command == "run":
+        failed = registry.failures()
+        if failed:
+            print("past failures, so this is not one of them under a new name:")
+            for r in failed:
+                print("  " + (r.lesson or make_lesson(r.id, r.reason, r.kind)))
     data = load_data([s.strip() for s in a.symbols.split(",") if s.strip()],
                      a.timeframe or hyp.timeframe, a.start, a.end, loader=loader)
     try:
