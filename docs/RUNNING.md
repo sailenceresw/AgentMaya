@@ -716,6 +716,55 @@ Drawdown and Sharpe are computed off the *realized* daily equity curve
 mark-to-market curve, so worst-case intratrade drawdown is understated
 relative to a true tick-by-tick equity series.
 
+## Research harness (`maya/research/`)
+
+Any new trading idea is tested here before it touches the strategy. A
+hypothesis is one fixed configuration that turns candles into hypothetical
+trades. The harness charges costs on every trade and applies a pass rule that
+was written before any result existed.
+
+```bash
+python -m maya.research list                      # declared hypotheses
+python -m maya.research run cvd_follow_baseline   # test on the research window
+python -m maya.research registry                  # every test so far, and the next threshold
+python -m maya.research holdout <id>              # once, and only after a research pass
+```
+
+Defaults are BTC/ETH/SOL on 15m bars from 2024-08-10 to 2026-08-09, the same
+range as the README study (`--symbols`, `--timeframe`, `--start`, `--end`
+change it). Data comes from the kline cache under `data/`.
+
+How a test is judged:
+
+- The newest 120 days are the holdout. `ResearchData.research` leaves them
+  out, and `run_holdout()` is the only function that reads them. It runs once
+  per hypothesis id, even if it crashes, and refuses ids with no research pass.
+- The rest is split into 8 equal sub-periods.
+- A hypothesis passes only with at least 100 trades, a mean net return above
+  zero, a positive mean in at least 6 of 8 sub-periods, and a t-stat at or
+  above the corrected threshold.
+- The threshold starts at 2.0 and rises with a two-sided Bonferroni correction
+  (alpha 0.05) on the number of research tests in the registry. The tenth test
+  needs 2.81.
+- Every test writes a row to the `hypotheses` table in `maya_journal.db`:
+  `id, description, tested_at, t_stat, passed_gate, reason`. A test that
+  raises still writes its row. There is no delete.
+
+Cost presets (`maya/research/costs.py`):
+
+| Preset | Per side | Round trip | Fills |
+|---|---|---|---|
+| `taker` (default) | 4 bps fee + 1 bp slippage | 10 bps | all |
+| `maker` | 2 bps fee, no slippage | 4 bps | 60%, seeded |
+
+The maker fee and fill rate are assumptions, not venue measurements. The
+holdout pass rule (30 trades, mean net above zero, t of 2.0) is also a choice
+made when the harness was written.
+
+To add a hypothesis, write a generator and `register()` it in
+`maya/research/hypotheses.py` under a new id. Changing an existing entry after
+seeing its result is tuning.
+
 ## Is a return target realistic? (Monte Carlo simulator)
 
 `maya/backtest/monte_carlo.py` simulates hundreds of thousands of **days** using
