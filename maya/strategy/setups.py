@@ -25,6 +25,10 @@ class SetupContext:
     breakout_down: bool = False
 
 
+# Suffix on a setup name whose CVD confirmation is reversed: a long wants
+# negative delta on the signal bar and a short wants positive.
+CVD_FLIP_SUFFIX = "_cvd_flip"
+
 # Minimum reward:risk each setup demands of its own geometry, before the risk
 # layer applies RiskLimits.MIN_RR_FOR_ENTRY on top. Named rather than inline so
 # they can be calibrated against measured R:R distributions instead of guessed.
@@ -92,6 +96,20 @@ def value_area_absorption(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
 
 def liquidity_sweep_choch(sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
     """Setup 2 — fade a liquidity sweep confirmed by a change of character."""
+    return _liquidity_sweep(sig, ctx, cvd_sign=1, name="liquidity_sweep_choch")
+
+
+def liquidity_sweep_choch_cvd_flip(sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
+    """Setup 2 with the CVD confirmation reversed (see ``CVD_FLIP_SUFFIX``)."""
+    return _liquidity_sweep(sig, ctx, cvd_sign=-1,
+                            name="liquidity_sweep_choch" + CVD_FLIP_SUFFIX)
+
+
+def _liquidity_sweep(sig: SignalObject, ctx: SetupContext, cvd_sign: int,
+                     name: str) -> TradeIntent | None:
+    """``cvd_sign`` is +1 for the original reading (delta with the trade) and
+    -1 for the flipped one (delta against it). Geometry is identical."""
+    cvd = sig.cvd_1m * cvd_sign
     vol_spike = sig.volume > 2.0 * sig.avg_volume
     if not vol_spike:
         return None
@@ -99,21 +117,21 @@ def liquidity_sweep_choch(sig: SignalObject, ctx: SetupContext) -> TradeIntent |
 
     # High sweep: buyers' breakout absorbed, sellers regain control (cvd < 0).
     buffer = _stop_buffer(price, sig.atr)
-    if ctx.swept_high and sig.cvd_1m < 0:
+    if ctx.swept_high and cvd < 0:
         entry = price
         sl = sig.high + buffer
         tp1 = ctx.swing_low_15m
         if _rr(entry, sl, tp1) >= RR_MIN_LIQUIDITY_SWEEP:
-            return TradeIntent(sig.symbol, "short", "liquidity_sweep_choch",
+            return TradeIntent(sig.symbol, "short", name,
                                entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
 
     # Low sweep: sellers' breakdown absorbed, buyers regain control (cvd > 0).
-    if ctx.swept_low and sig.cvd_1m > 0:
+    if ctx.swept_low and cvd > 0:
         entry = price
         sl = sig.low - buffer
         tp1 = ctx.swing_high_15m
         if _rr(entry, sl, tp1) >= RR_MIN_LIQUIDITY_SWEEP:
-            return TradeIntent(sig.symbol, "long", "liquidity_sweep_choch",
+            return TradeIntent(sig.symbol, "long", name,
                                entry, sl, tp1, tp1, 0, [], _rr(entry, sl, tp1), sig.timestamp)
     return None
 
@@ -126,6 +144,17 @@ COMPRESSION_TARGET_RANGES = 2.0    # measured move: range height x 2 minimum
 
 
 def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
+    return _compression_breakout(sig, ctx, cvd_sign=1, name="compression_breakout")
+
+
+def compression_breakout_cvd_flip(sig: SignalObject, ctx: SetupContext) -> TradeIntent | None:
+    """Setup 3 with the CVD confirmation reversed (see ``CVD_FLIP_SUFFIX``)."""
+    return _compression_breakout(sig, ctx, cvd_sign=-1,
+                                 name="compression_breakout" + CVD_FLIP_SUFFIX)
+
+
+def _compression_breakout(sig: SignalObject, ctx: SetupContext, cvd_sign: int,
+                          name: str) -> TradeIntent | None:
     """Setup 3 — trade the expansion out of a tight compression range.
 
     Built to spec 6.2: a sub-0.3% range over the prior 30 candles, a volume
@@ -153,9 +182,10 @@ def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | 
     rng = sig.range_high - sig.range_low
     mid = (sig.range_high + sig.range_low) / 2
 
-    if price > sig.range_high and sig.cvd_1m > 0:
+    cvd = sig.cvd_1m * cvd_sign
+    if price > sig.range_high and cvd > 0:
         direction, sign = "long", 1
-    elif price < sig.range_low and sig.cvd_1m < 0:
+    elif price < sig.range_low and cvd < 0:
         direction, sign = "short", -1
     else:
         return None
@@ -165,8 +195,12 @@ def compression_breakout(sig: SignalObject, ctx: SetupContext) -> TradeIntent | 
         return None
     reach = max(COMPRESSION_TARGET_RANGES * rng, RR_MIN_COMPRESSION_BREAKOUT * risk)
     tp1 = price + sign * reach
-    return TradeIntent(sig.symbol, direction, "compression_breakout",
+    return TradeIntent(sig.symbol, direction, name,
                        price, mid, tp1, tp1, 0, [], _rr(price, mid, tp1), sig.timestamp)
 
 
 ALL_SETUPS = (value_area_absorption, liquidity_sweep_choch, compression_breakout)
+# Off unless MAYA_CVD_FLIP_SETUPS_ENABLED. The README measured positive delta
+# ahead of *negative* returns, so these take the same sweeps and breakouts but
+# want the bar's delta to point against the trade. Unmeasured as setups.
+CVD_FLIP_SETUPS = (liquidity_sweep_choch_cvd_flip, compression_breakout_cvd_flip)

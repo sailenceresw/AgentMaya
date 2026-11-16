@@ -28,9 +28,19 @@ class StrategyEngine:
         self.lows: deque[float] = deque(maxlen=15)
         self.closes: deque[float] = deque(maxlen=30)
         self.llm = LLMFilter(settings)
-        self._setups = tuple(
-            s for s in setup_mod.ALL_SETUPS
-            if s is not setup_mod.compression_breakout or settings.compression_breakout_enabled)
+        chosen = [s for s in setup_mod.ALL_SETUPS
+                  if s is not setup_mod.compression_breakout
+                  or settings.compression_breakout_enabled]
+        if settings.cvd_flip_setups_enabled:
+            chosen += list(setup_mod.CVD_FLIP_SETUPS)
+        only = {n.strip() for n in settings.setups_only.split(",") if n.strip()}
+        if only:
+            known = {s.__name__: s for s in setup_mod.ALL_SETUPS + setup_mod.CVD_FLIP_SETUPS}
+            unknown = only - set(known)
+            if unknown:
+                raise ValueError(f"setups_only names unknown setups: {sorted(unknown)}")
+            chosen = [known[n] for n in sorted(only)]
+        self._setups = tuple(chosen)
 
     def observe(self, sig: SignalObject) -> SetupContext:
         """Record this bar in the rolling swing context and return the context
