@@ -25,10 +25,25 @@ class Position:
     # The stop as placed at entry. ``stop_loss`` moves (breakeven), but the
     # trade's risk — the denominator of its R-multiple — was fixed at entry.
     initial_stop_loss: float | None = None
+    # Best price reached since entry (highest high for a long, lowest low for
+    # a short). The trailing stop follows this once the profit lock has fired.
+    best_price: float | None = None
 
     def __post_init__(self) -> None:
         if self.initial_stop_loss is None:
             self.initial_stop_loss = self.stop_loss
+        if self.best_price is None:
+            self.best_price = self.entry_price
+
+    def is_tighter(self, new_stop: float) -> bool:
+        """True when ``new_stop`` is closer to profit than the current stop.
+
+        This is the only test a stop move has to pass, and it is one-way: a
+        stop may rise under a long or fall over a short, never the reverse.
+        """
+        if self.direction == "long":
+            return new_stop > self.stop_loss
+        return new_stop < self.stop_loss
 
     @property
     def initial_risk_usd(self) -> float:

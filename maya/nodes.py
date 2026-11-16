@@ -4,7 +4,8 @@ Each method is a graph node: it takes the current :class:`TradingState`, calls
 into the relevant layer service, and returns the state updates. The node order
 encodes the spec's data flow:
 
-    manage (L5 mgmt) -> signal (L2) -> strategy (L3) -> risk (L4) -> execute (L5)
+    manage (L5 mgmt) -> signal (L2) -> strategy (L3) -> learning (L6)
+        -> risk (L4) -> execute (L5)
 
 Layer 1 (ingestion) feeds candles into the runner; Layer 6 (journal) is written
 from the manage node when a trade closes; Layer 7 (monitoring) is the logging.
@@ -18,6 +19,7 @@ from loguru import logger
 from maya.config import Settings
 from maya.execution.engine import ExecutionEngine
 from maya.journal.store import TradeJournal
+from maya.learning.lessons import LessonsReviewer
 from maya.risk.manager import RiskManager, SystemState
 from maya.signals.processor import SignalProcessor
 from maya.state import TradingState
@@ -46,6 +48,9 @@ class TradingNodes:
         self.risk = RiskManager.from_journal(settings, equity, journal, now_ts)
         self.execution = ExecutionEngine(settings)
         self.journal = journal
+        self.lessons = LessonsReviewer(
+            journal, settings.lessons_similarity, settings.lessons_min_matches,
+            settings.lessons_min_win_rate) if settings.lessons_veto_enabled else None
 
     # -- nodes ------------------------------------------------------------- #
     def manage_node(self, state: TradingState) -> TradingState:
@@ -78,6 +83,22 @@ class TradingNodes:
         if self.execution.has_position:
             return {"intent": None}
         return {"intent": self.strategy.evaluate(signal, ctx)}
+
+    def learning_node(self, state: TradingState) -> TradingState:
+        """Read past trades for this setup and context; veto a losing one.
+
+        Runs before risk and can only drop the intent. Whatever it lets
+        through is screened by the risk layer exactly as before.
+        """
+        intent = state.get("intent")
+        if intent is None or self.lessons is None:
+            return {"lesson_veto": None}
+        review = self.lessons.review(intent.setup_name, intent.direction,
+                                     intent.confluences, state["candle"].timestamp)
+        if review.veto:
+            logger.info(review.reason)
+            return {"intent": None, "lesson_veto": review.reason}
+        return {"lesson_veto": None}
 
     def risk_node(self, state: TradingState) -> TradingState:
         candle = state["candle"]

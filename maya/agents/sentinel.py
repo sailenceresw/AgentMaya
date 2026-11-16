@@ -53,7 +53,7 @@ def observe(risk: RiskManager, now_ts: int) -> Finding:
                        f"daily trade cap reached ({acc.trades_today}/"
                        f"{RiskLimits.MAX_TRADES_PER_DAY})", data)
 
-    if acc.equity < RiskLimits.EQUITY_FLOOR_USDT:
+    if acc.equity < RiskLimits.equity_floor(acc.start_equity):
         return Finding(AGENT, BLOCK, 1.0,
                        f"equity ${acc.equity:.2f} below floor", data)
 

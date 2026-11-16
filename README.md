@@ -28,7 +28,7 @@ A runnable **LangGraph** application implementing the 7-layer architecture. The
 graph is invoked once per candle:
 
 ```
-START → manage (L5) → signal (L2) → strategy (L3) → risk (L4) → execution (L5) → END
+START → manage (L5) → signal (L2) → strategy (L3) → learning (L6) → risk (L4) → execution (L5) → END
 ```
 
 ```
@@ -42,7 +42,9 @@ maya/
   execution/   # L5 paper, ccxt & MetaMask brokers, position management
   fees.py      # per-venue fee model: maker/taker + MetaMask builder fee
   scanner.py   # multi-coin scanner; scan_run.py trades its best pick
-  journal/     # L6 SQLite trade journal + performance metrics
+  journal/     # L6 SQLite trade journal + performance metrics + lessons table
+  learning/    # L6 lessons from losing trades and the veto that reads them
+  research/    # hypothesis harness: holdout, registry, corrected t, costs
   timeframe.py # single source of truth for timeframe parsing
   graph.py     # LangGraph StateGraph wiring the layers
   run.py       # ingestion loop / CLI entrypoint
@@ -51,7 +53,7 @@ tests/         # indicators, risk limits, agents, end-to-end pipeline
 
 ## The desk
 
-Five pipeline agents run in order each candle; four analysts sit inside Maya
+Six pipeline agents run in order each candle; four analysts sit inside Maya
 and file an opinion on the same bar. Node keys are unchanged — these are names
 for humans reading logs.
 
@@ -60,6 +62,7 @@ for humans reading logs.
 | **Warden** | `manage` | Watches open positions; journals every close |
 | **Iris** | `signal` | Perception — order flow, profile, ATR, HTF, patterns |
 | **Maya** | `strategy` | Runs the conference and decides |
+| **Mentor** | `learning` | Reads past trades in the same context; can only veto |
 | **Sentinel** | `risk` | Hard limits and kill switch; absolute veto |
 | **Hermes** | `execution` | Places orders; decides nothing |
 

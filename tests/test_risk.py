@@ -20,7 +20,7 @@ def _settings():
 
 
 def test_position_sizing_caps_at_notional_limit():
-    # Tiny stop distance would imply huge notional -> must be capped at 5x equity.
+    # Tiny stop distance would imply huge notional -> must be capped at the notional limit.
     notional = calculate_position_notional(1000, 0.5, entry=100, sl=99.99)
     assert notional <= 1000 * RiskLimits.POSITION_NOTIONAL_CAP_MULT
 
@@ -40,19 +40,19 @@ def _intent(rr=5.0, take_profit_1=120, stop_loss=99):
 
 
 def test_rejects_low_roi():
-    """min_roi_pct is screened on *margin*, so at 20x a 1% move to target is
-    a 20% return and must still fail a 40% threshold."""
+    """min_roi_pct is screened on *margin*, so at 10x a 1% move to target is
+    a 10% return and must still fail a 40% threshold."""
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
-                              min_roi_pct=40.0, leverage=20), 1000)
+                              min_roi_pct=40.0, leverage=10), 1000)
     decision = rm.screen(_intent(rr=5.0, take_profit_1=101), now_ts=0)
     assert not decision.approved
     assert "on margin" in decision.reason
 
 
 def test_allows_minimum_roi():
-    # 3% move x 20x = 60% on margin, clears the 40% threshold.
+    # 3% move x 10x = 30% on margin (29.3% after fees), clears a 25% threshold.
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
-                              min_roi_pct=40.0, leverage=20), 1000)
+                              min_roi_pct=25.0, leverage=10), 1000)
     decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
     assert decision.approved
 
@@ -66,7 +66,7 @@ def test_roi_gate_is_measured_on_margin_not_raw_price_move():
     assert intent.roi_on_margin_pct(20) > 90.0      # but 92.8% on margin at 20x
 
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
-                              min_roi_pct=40.0, leverage=20), 1000)
+                              min_roi_pct=40.0, leverage=10), 1000)
     assert rm.screen(intent, now_ts=0).approved
 
 
@@ -80,13 +80,13 @@ def test_same_trade_is_rejected_at_low_leverage():
 
 
 def test_margin_sizing_gives_margin_times_leverage():
-    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=10,
                               sizing_mode="margin", margin_per_trade_usd=20.0,
-                              min_roi_pct=40.0), 1000)
+                              min_roi_pct=25.0), 1000)
     decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
     assert decision.approved
-    assert decision.leverage == 20
-    assert abs(decision.position_notional - 400.0) < 1e-6  # $20 x 20x
+    assert decision.leverage == 10
+    assert abs(decision.position_notional - 200.0) < 1e-6  # $20 x 10x
 
 
 def test_margin_sizing_still_respects_the_per_trade_risk_ceiling():
@@ -101,9 +101,9 @@ def test_margin_sizing_still_respects_the_per_trade_risk_ceiling():
 
 
 def test_risk_sizing_mode_still_available():
-    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=20,
+    rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000, leverage=10,
                               sizing_mode="risk", risk_per_trade_usd=20.0,
-                              min_roi_pct=40.0), 1000)
+                              min_roi_pct=25.0), 1000)
     decision = rm.screen(_intent(rr=5.0, take_profit_1=103, stop_loss=99.5), now_ts=0)
     # 0.5% stop, $20 risk -> $4000 notional: derived from the stop, not margin.
     # (A 0.5% stop so the prices really are ~5:1 after fees, as rr=5.0 claims.)
@@ -126,7 +126,7 @@ def test_rejects_when_halted():
 
 def test_daily_loss_limit_triggers_halt():
     rm = RiskManager(_settings(), 1000)
-    rm.account.equity = 1000 * (1 - 0.04)  # -4% > 3% daily limit
+    rm.account.equity = 1000 * (1 - 0.11)  # -11% > 10% daily limit
     rm.check_kill_switch(now_ts=0)
     assert rm.account.state is SystemState.HALTED
 
@@ -274,8 +274,12 @@ def test_daily_loss_halt_lifts_on_the_next_day():
     the wrong name."""
     rm = RiskManager(_settings(), equity=1000)
     rm.check_kill_switch(0)                 # anchor the period
+    # The weekly limit (8%) is tighter than the daily one (10%), so a daily
+    # halt can only be seen on its own when the week is already in profit:
+    # the day starts at 1200 against a week that started at 1000.
+    rm.account.equity = rm.account.day_start_equity = 1200.0
     rm.on_trade_opened()
-    rm.on_trade_closed(-40.0, 0)            # -4%, past the 3% daily limit
+    rm.on_trade_closed(-130.0, 0)           # -10.8% on the day, week still +7%
     assert rm.account.state is SystemState.HALTED
 
     rm.check_kill_switch(_DAY)
@@ -298,19 +302,21 @@ def test_a_system_halted_twice_stays_halted_after_one_period_clears():
     rm = RiskManager(_settings(), equity=1000)
     rm.check_kill_switch(0)
     rm.manual_halt()
+    rm.account.equity = rm.account.day_start_equity = 1200.0
     rm.on_trade_opened()
-    rm.on_trade_closed(-40.0, 0)            # daily halt on top of the manual one
+    rm.on_trade_closed(-130.0, 0)           # daily halt on top of the manual one
     rm.check_kill_switch(_DAY)              # clears only the daily one
     assert rm.account.state is SystemState.HALTED
 
 
 def test_rejects_stop_beyond_liquidation():
-    """At 20x an isolated position liquidates after roughly a 3.75% adverse
-    move (5% initial margin less 1.25% maintenance). A 5% stop would never
-    fire — the venue would liquidate first and keep the whole margin."""
+    """At 10x an isolated position liquidates after roughly an 8.75% adverse
+    move (10% initial margin less 1.25% maintenance), and the stop must sit
+    inside 80% of that, so 7%. An 8% stop is too close to liquidation: the
+    venue could liquidate first and keep the whole margin."""
     rm = RiskManager(Settings(mode=RunMode.SIM, start_equity=1000,
-                              min_roi_pct=10.0, leverage=20), 1000)
-    decision = rm.screen(_intent(rr=5.0, take_profit_1=125, stop_loss=95), now_ts=0)
+                              min_roi_pct=10.0, leverage=10), 1000)
+    decision = rm.screen(_intent(rr=5.0, take_profit_1=140, stop_loss=92), now_ts=0)
     assert not decision.approved
     assert "liquidation" in decision.reason
 
@@ -334,7 +340,7 @@ def _fee_rm(**kw):
     from maya.config import Venue
 
     return RiskManager(Settings(mode=RunMode.SIM, venue=Venue.HYPERLIQUID, start_equity=1000,
-                                leverage=20, min_roi_pct=10.0, **kw), 1000)
+                                leverage=10, min_roi_pct=10.0, **kw), 1000)
 
 
 def test_fee_gate_rejects_a_scalp_that_only_pays_the_fees():

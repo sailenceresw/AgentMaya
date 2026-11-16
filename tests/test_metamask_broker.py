@@ -842,7 +842,7 @@ def test_risk_manager_sizes_at_the_venue_minimum():
     from maya.risk.manager import RiskManager
 
     s = Settings(mode=RunMode.SIM, venue=Venue.HYPERLIQUID, perps_min_size=True,
-                 start_equity=1000, leverage=20)
+                 start_equity=1000, leverage=10)
     intent = TradeIntent(symbol="BTCUSDT", direction="long", setup_name="x",
                          entry_price=100.0, stop_loss=99.0, take_profit_1=105.0,
                          take_profit_2=106.0, confluence_score=8, expected_rr=5.0)

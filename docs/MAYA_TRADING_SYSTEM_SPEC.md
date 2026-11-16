@@ -380,15 +380,15 @@ TradeIntent {
 
 | Limit | Value |
 |---|---|
-| Max risk per trade | 0.5% of account equity |
+| Max risk per trade | 3% of account equity, and never more than $20 |
 | Max concurrent positions | 1 (single position only) |
-| Max trades per day | 5 |
+| Max trades per day | 10 |
 | Max consecutive losses | 2 (then 60-min cooldown) |
-| Daily loss limit | 3% of account equity |
+| Daily loss limit | 10% of account equity |
 | Weekly loss limit | 8% of account equity |
 | Max leverage | 10x |
 | Margin mode | ISOLATED (always) |
-| Position notional cap | 5x account equity (regardless of leverage) |
+| Position notional cap | 10x account equity |
 | Min R:R for entry | 1:4 |
 | Max position duration | 4 hours (force close after) |
 
@@ -494,7 +494,7 @@ Use LIMIT orders for TPs. Split into 2-3 partial closes for scaling out. Move SL
 
 ### 8.3 Position Management Logic
 
-- After +0.3% favorable move → move SL to breakeven
+- After +0.6% favorable close → move SL to breakeven plus round-trip fees, then trail it 0.3% behind the best price. A stop only moves toward profit. (As built; the two bullets below are the original design and are not implemented.)
 - After TP1 hit (50% closed) → move SL to +0.2% (lock profit)
 - After TP2 hit (25% closed) → trail SL using 1m swing structure
 - If position duration exceeds 4 hours → force close at market
@@ -931,13 +931,13 @@ Start with Freqtrade as the foundation. Build Fabervaale-style indicators and st
 
 | Parameter | Value |
 |---|---|
-| Max risk per trade | 0.5% |
+| Max risk per trade | 3% |
 | Min R:R required | 1:4 |
 | Max leverage | 10x |
 | Default leverage | 5x |
 | Margin mode | ISOLATED always |
-| Max trades per day | 5 |
-| Daily loss limit | 3% |
+| Max trades per day | 10 |
+| Daily loss limit | 10% |
 | Weekly loss limit | 8% |
 | Max concurrent positions | 1 |
 | Max position duration | 4 hours |

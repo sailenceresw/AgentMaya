@@ -49,7 +49,7 @@ def _fake_result(pnl: float, result: str = "win"):
     pos = Position(
         symbol="BTCUSDT", direction="short", setup_name="liquidity_sweep_choch",
         entry_price=66800.0, stop_loss=67388.0, take_profit=63700.0,
-        quantity=0.00599, notional=400.0, leverage=20, opened_ts=1700000600000,
+        quantity=0.00599, notional=400.0, leverage=10, opened_ts=1700000600000,
         confluence_score=7, rr_planned=5.2,
     )
     return TradeResult(pos, 63700.0, pnl, 0.4, 5.2, result, 1700000900000, "take_profit")

@@ -160,24 +160,24 @@ def test_uncompounded_result_is_independent_of_day_count():
 def test_leverage_does_not_change_pnl_when_risk_is_fixed():
     """The single most misunderstood thing about leverage: with a fixed stop
     and a fixed risk amount, position size is set by the stop distance, so
-    5x and 20x produce *identical* P&L. Leverage only changes margin locked
+    5x and 10x produce *identical* P&L. Leverage only changes margin locked
     and where liquidation sits."""
     kw = dict(simulations=600, days=40, seed=77, risk_model="fixed_usd", risk_usd=20.0)
     low = summarize(simulate(SimParams(leverage=5, **kw)))
-    high = summarize(simulate(SimParams(leverage=20, **kw)))
+    high = summarize(simulate(SimParams(leverage=10, **kw)))
     assert low["mean_daily_return_pct"] == high["mean_daily_return_pct"]
     assert low["worst_day_pct"] == high["worst_day_pct"]
 
 
 def test_leverage_only_changes_margin_and_liquidation_distance():
     kw = dict(risk_model="fixed_usd", risk_usd=20.0)
-    low, high = SimParams(leverage=5, **kw), SimParams(leverage=20, **kw)
-    # Same position, four times less margin tied up.
+    low, high = SimParams(leverage=5, **kw), SimParams(leverage=10, **kw)
+    # Same position, half the margin tied up.
     assert low.notional_at(1000.0) == high.notional_at(1000.0)
-    assert high.initial_margin_usd == pytest.approx(low.initial_margin_usd / 4)
-    # ...and liquidation sits four times closer.
+    assert high.initial_margin_usd == pytest.approx(low.initial_margin_usd / 2)
+    # ...and liquidation sits closer.
     assert high.liquidation_move_frac < low.liquidation_move_frac
-    # At a 0.7% stop and 20x, liquidation (~4.5%) is still far beyond the stop.
+    # At a 0.7% stop and 10x, liquidation is still far beyond the stop.
     assert high.stop_to_liquidation_ratio < 0.25
 
 
@@ -185,9 +185,9 @@ def test_leverage_DOES_change_size_in_margin_mode():
     """The complement of the test above, and the reason the distinction
     matters: when you size by margin, leverage *is* your position size."""
     kw = dict(risk_model="fixed_margin", margin_usd=20.0)
-    low, high = SimParams(leverage=5, **kw), SimParams(leverage=20, **kw)
-    assert high.notional_at(1000.0) == pytest.approx(low.notional_at(1000.0) * 4)
-    assert high.initial_risk_pct == pytest.approx(low.initial_risk_pct * 4)
+    low, high = SimParams(leverage=5, **kw), SimParams(leverage=10, **kw)
+    assert high.notional_at(1000.0) == pytest.approx(low.notional_at(1000.0) * 2)
+    assert high.initial_risk_pct == pytest.approx(low.initial_risk_pct * 2)
 
 
 def test_simulator_defaults_track_live_settings():
@@ -203,18 +203,18 @@ def test_simulator_defaults_track_live_settings():
 
 
 def test_fixed_margin_sizes_notional_as_margin_times_leverage():
-    p = SimParams(risk_model="fixed_margin", margin_usd=20.0, leverage=20)
-    assert p.notional_at(1000.0) == pytest.approx(400.0)
+    p = SimParams(risk_model="fixed_margin", margin_usd=20.0, leverage=10)
+    assert p.notional_at(1000.0) == pytest.approx(200.0)
     # Risk is then whatever the stop implies, not a number you chose.
-    assert p.initial_risk_pct == pytest.approx(400.0 * 0.007 / 1000 * 100)
+    assert p.initial_risk_pct == pytest.approx(200.0 * 0.007 / 1000 * 100)
 
 
 def test_fixed_margin_risks_far_less_than_fixed_usd_at_the_same_leverage():
     """$20 of margin at 20x and $20 of risk at 20x are not the same trade —
     they differ by ~7x in position size. This is the ambiguity that has to be
     resolved before any of these numbers mean anything."""
-    margin_mode = SimParams(risk_model="fixed_margin", margin_usd=20.0, leverage=20)
-    risk_mode = SimParams(risk_model="fixed_usd", risk_usd=20.0, leverage=20)
+    margin_mode = SimParams(risk_model="fixed_margin", margin_usd=20.0, leverage=10)
+    risk_mode = SimParams(risk_model="fixed_usd", risk_usd=20.0, leverage=10)
     assert risk_mode.notional_at(1000.0) > margin_mode.notional_at(1000.0) * 5
 
 

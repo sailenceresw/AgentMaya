@@ -82,18 +82,43 @@ class Settings(BaseSettings):
     # "risk"   : size so that a stop-out loses exactly ``risk_per_trade_usd``.
     #            Position size is derived from the stop distance and leverage
     #            affects only how much margin is locked, never the P&L.
+    # "risk_pct": size so that a stop-out loses ``risk_per_trade_pct`` of
+    #            current equity: (equity x pct) / stop distance, clamped by
+    #            the notional cap. The mode for small accounts, where a fixed
+    #            dollar amount is the wrong unit.
     sizing_mode: str = "margin"
     margin_per_trade_usd: float = 20.0
     risk_per_trade_usd: float = 20.0
+    risk_per_trade_pct: float = 3.0
 
     # Leverage actually used for orders. Bounded by RiskLimits.MAX_LEVERAGE.
-    leverage: int = 20
+    leverage: int = 10
+
+    # -- profit protection -------------------------------------------------- #
+    # Once price has moved this far in favour (percent of entry, on a close),
+    # the stop goes to entry plus the round-trip fees, so a reversal from
+    # there costs nothing. After that it trails ``profit_trail_pct`` behind
+    # the best price seen. A stop only ever moves towards profit.
+    profit_lock_trigger_pct: float = 0.6
+    profit_trail_pct: float = 0.3
+
+    # -- lessons memory ----------------------------------------------------- #
+    # Before an entry, past trades of the same setup and direction whose
+    # confluence factors overlap by at least ``lessons_similarity`` (Jaccard)
+    # are looked up. With ``lessons_min_matches`` or more of them and a win
+    # rate under ``lessons_min_win_rate``, the entry is vetoed. 0.2 is the
+    # break-even win rate of a 1:4 trade before fees. Veto only: this can
+    # never approve a trade or change a limit.
+    lessons_veto_enabled: bool = True
+    lessons_similarity: float = 0.75
+    lessons_min_matches: int = 5
+    lessons_min_win_rate: float = 0.2
 
     # Minimum expected ROI **on margin** (i.e. the price move multiplied by
     # leverage), not the raw price move — see TradeIntent.roi_on_margin_pct.
     #
-    # Read this as a price move before changing it: at the default 20x, 10%
-    # on margin is a 0.5% move to TP1, which is a real but reachable 1m scalp.
+    # Read this as a price move before changing it: at the default 10x, 10%
+    # on margin is a 1% move to TP1, which is a real but reachable 1m scalp.
     # The previous default of 40% demanded a **2% move to target on a
     # 1-minute chart** — a swing-trade distance on a scalping timeframe — and
     # rejected essentially every candidate the strategy produced.
@@ -268,8 +293,24 @@ class Settings(BaseSettings):
     @field_validator("sizing_mode")
     @classmethod
     def _known_sizing_mode(cls, v: str) -> str:
-        if v not in ("margin", "risk"):
-            raise ValueError(f"sizing_mode={v!r} must be 'margin' or 'risk'")
+        if v not in ("margin", "risk", "risk_pct"):
+            raise ValueError(f"sizing_mode={v!r} must be 'margin', 'risk' or 'risk_pct'")
+        return v
+
+    @field_validator("risk_per_trade_pct")
+    @classmethod
+    def _risk_pct_within_hard_limit(cls, v: float) -> float:
+        if v <= 0 or v > RiskLimits.MAX_RISK_PER_TRADE_PCT:
+            raise ValueError(
+                f"risk_per_trade_pct={v} outside (0, {RiskLimits.MAX_RISK_PER_TRADE_PCT}] "
+                "(RiskLimits.MAX_RISK_PER_TRADE_PCT)")
+        return v
+
+    @field_validator("profit_lock_trigger_pct", "profit_trail_pct")
+    @classmethod
+    def _profit_protection_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("profit protection distances must be above zero")
         return v
 
     @property
@@ -357,15 +398,23 @@ class Settings(BaseSettings):
 class RiskLimits:
     """Hard-coded safety limits (spec section 7.1). Treat as immutable."""
 
-    MAX_RISK_PER_TRADE_PCT = 0.5          # % of equity (legacy/default)
+    # Both ceilings apply to every sizing mode; the smaller one wins. The
+    # percentage is what binds on a small account ($0.30 on $10), the USD
+    # figure on a large one. Raised from 0.5% at the owner's request so a $10
+    # account at 10x can size a trade at all: ten straight losses at 3% is a
+    # 26% drawdown, which is why DAILY_LOSS_LIMIT_PCT below is the real brake.
+    MAX_RISK_PER_TRADE_PCT = 3.0          # % of equity
     MAX_RISK_PER_TRADE_USD = 20.0        # fixed USD risk per trade
     MAX_CONCURRENT_POSITIONS = 1
-    MAX_TRADES_PER_DAY = 5
+    MAX_TRADES_PER_DAY = 10
     MAX_CONSECUTIVE_LOSSES = 2            # then cooldown
     COOLDOWN_MINUTES = 60
-    DAILY_LOSS_LIMIT_PCT = 3.0
+    DAILY_LOSS_LIMIT_PCT = 10.0
+    # Left at 8% on purpose: nobody asked for it to move. It is now tighter
+    # than the daily limit, so a single 8% day early in the week halts trading
+    # until the next week. Raise it only by an explicit decision.
     WEEKLY_LOSS_LIMIT_PCT = 8.0
-    MAX_LEVERAGE = 20
+    MAX_LEVERAGE = 10
     # Maintenance margin assumed when estimating where a position liquidates.
     # Hyperliquid BTC is 1.25% (half the initial margin at its 40x max);
     # Binance BTC tier 1 is 0.4%. The larger figure is used for both venues
@@ -375,10 +424,17 @@ class RiskLimits:
     # leaving room for slippage on the stop fill and accrued funding.
     LIQUIDATION_BUFFER = 0.8
     DEFAULT_LEVERAGE = 5
-    POSITION_NOTIONAL_CAP_MULT = 5.0     # x equity
+    POSITION_NOTIONAL_CAP_MULT = 10.0    # x equity
     MIN_RR_FOR_ENTRY = 4.0
     MAX_POSITION_DURATION_HOURS = 4
     EQUITY_FLOOR_USDT = 50.0
+    # A flat $50 floor halts a $10 account before its first trade, so the
+    # floor is the smaller of $50 and this share of the starting equity.
+    EQUITY_FLOOR_FRACTION_OF_START = 0.5
+
+    @classmethod
+    def equity_floor(cls, start_equity: float) -> float:
+        return min(cls.EQUITY_FLOOR_USDT, start_equity * cls.EQUITY_FLOOR_FRACTION_OF_START)
     MIN_CONFLUENCE_SCORE = 7             # spec section 6.3
     DATA_STALE_SECONDS = 30
 

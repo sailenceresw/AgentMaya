@@ -68,8 +68,8 @@ including your own, three months from now, at 2am, after two losses in a row.
 Changing them isn't forbidden, but it should be a deliberate, separate
 decision, not a side effect of some other change.
 
-- **`maya/config.py` → `RiskLimits` class.** `MAX_RISK_PER_TRADE_PCT` (0.5%),
-  `MAX_LEVERAGE` (10x), `MIN_RR_FOR_ENTRY` (4.0), `MAX_TRADES_PER_DAY` (5),
+- **`maya/config.py` → `RiskLimits` class.** `MAX_RISK_PER_TRADE_PCT` (3%),
+  `MAX_LEVERAGE` (10x), `MIN_RR_FOR_ENTRY` (4.0), `MAX_TRADES_PER_DAY` (10),
   `MAX_CONSECUTIVE_LOSSES`/cooldown, daily/weekly loss limits, equity floor.
   No LLM code path can reach these — keep it that way.
 - **`maya/risk/manager.py`.** The veto logic. If you add an LLM-assisted

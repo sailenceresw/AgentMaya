@@ -44,7 +44,7 @@ client are replaced with fakes. Keep it that way.
 ```
 maya/
   config.py        Settings (MAYA_* env) + RiskLimits (immutable hard limits)
-  graph.py nodes.py   manage → signal → strategy → risk → execution, per candle
+  graph.py nodes.py   manage → signal → strategy → learning → risk → execution, per candle
   run.py           single-symbol agent: preflight, feed, watchdog, API, shutdown
   scanner.py scan_run.py   multi-coin scanner and the agent that trades its pick
   fees.py          per-venue fee model (maker/taker legs + MetaMask builder fee)
@@ -55,7 +55,8 @@ maya/
   risk/            RiskManager: hard limits, kill switch, sizing, liquidation + fee gates
   execution/       ExecutionEngine; Paper, ccxt (Binance) and MetaMask/Hyperliquid brokers;
                    PositionMonitor (venue fills between candles)
-  journal/         SQLite journal; restores risk state across restarts
+  journal/         SQLite journal + lessons table; restores risk state across restarts
+  learning/        lesson per losing trade; LessonsReviewer veto (no LLM, veto only)
   backtest/        runner (same graph as live), sweep, metrics, plot, Monte Carlo, funding
   research/        hypothesis harness: holdout, registry, corrected t threshold, cost presets
   api/server.py    token-protected monitoring API + phone dashboard + halt switch

@@ -2,7 +2,7 @@
 
 For paper/sim modes the engine simulates SL/TP fills against each candle's
 high/low and applies the position-management rules from spec section 8.3
-(breakeven move, max duration force-close). For testnet/live the exchange holds
+(profit lock, trailing stop, max duration force-close). For testnet/live the exchange holds
 the stop/TP orders; this engine still tracks the position locally and applies
 duration-based force closes.
 """
@@ -150,23 +150,59 @@ class ExecutionEngine:
                 if candle.low <= pos.take_profit:
                     return self._close(pos.take_profit, candle.timestamp, "take_profit")
 
-            # Move stop to breakeven after +0.3% favorable close — applies to
-            # the NEXT bar onward, never the bar that triggered it (spec 8.3).
-            fav = (candle.close - pos.entry_price) / pos.entry_price
-            if pos.direction == "short":
-                fav = -fav
-            if not pos.moved_to_breakeven and fav >= 0.003:
-                new_stop = pos.entry_price
-                if self.broker.update_stop(pos, new_stop):
-                    pos.stop_loss = new_stop
-                    pos.moved_to_breakeven = True
-                    logger.debug("SL moved to breakeven for {}", pos.symbol)
+            self._protect_profit(pos, candle)
 
             # Max duration force-close (spec 7.1 / 8.3).
             dur_h = (candle.timestamp - pos.opened_ts) / 3_600_000
             if dur_h >= RiskLimits.MAX_POSITION_DURATION_HOURS:
                 return self._close(candle.close, candle.timestamp, "max_duration")
             return None
+
+    def _protect_profit(self, pos: Position, candle: Candle) -> None:
+        """Profit lock, then trailing stop. Takes effect from the NEXT bar,
+        never the bar that triggered it (the stop/target check above already
+        ran against the old stop).
+
+        1. Once a close is ``profit_lock_trigger_pct`` in favour, the stop
+           moves to entry plus the round-trip fees, so a reversal from there
+           closes flat after costs rather than at a small loss.
+        2. From then on the stop trails ``profit_trail_pct`` behind the best
+           price seen.
+
+        Every move goes through :meth:`_tighten_stop`, which refuses anything
+        that is not closer to profit than the stop already in place.
+        """
+        long = pos.direction == "long"
+        pos.best_price = max(pos.best_price, candle.high) if long \
+            else min(pos.best_price, candle.low)
+
+        if not pos.moved_to_breakeven:
+            fav = (candle.close - pos.entry_price) / pos.entry_price
+            if not long:
+                fav = -fav
+            if fav < self.settings.profit_lock_trigger_pct / 100.0:
+                return
+            fee_offset = pos.entry_price * self.fees.worst_round_trip(self.order_type)
+            lock = pos.entry_price + fee_offset if long else pos.entry_price - fee_offset
+            if self._tighten_stop(pos, lock):
+                pos.moved_to_breakeven = True
+                logger.debug("SL locked at breakeven plus fees for {}", pos.symbol)
+            if not pos.moved_to_breakeven:
+                return
+
+        trail = self.settings.profit_trail_pct / 100.0
+        target = pos.best_price * (1 - trail) if long else pos.best_price * (1 + trail)
+        self._tighten_stop(pos, target)
+
+    def _tighten_stop(self, pos: Position, new_stop: float) -> bool:
+        """Move the stop to ``new_stop`` if, and only if, that is closer to
+        profit. There is deliberately no method that widens or removes a stop."""
+        if not pos.is_tighter(new_stop):
+            return False
+        if not self.broker.update_stop(pos, new_stop):
+            return False
+        pos.stop_loss = new_stop
+        return True
 
     def force_close(self, price: float, ts: int) -> TradeResult | None:
         with self.lock:
