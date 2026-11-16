@@ -222,6 +222,12 @@ class Settings(BaseSettings):
     # default so live behaviour matches what was measured; turn on only after
     # `maya.backtest.sweep` shows it paying after fees.
     compression_breakout_enabled: bool = False
+    # Adds the two flipped-CVD setups (maya.strategy.setups.CVD_FLIP_SETUPS).
+    # Unmeasured, so off.
+    cvd_flip_setups_enabled: bool = False
+    # Comma-separated setup names to run and nothing else. Blank means the
+    # normal selection. For research runs that isolate one idea.
+    setups_only: str = ""
 
     # -- Multi-coin scanner (maya.scanner / maya.scan_run) ------------------ #
     # Coins come from Hyperliquid's public market list, busiest first.

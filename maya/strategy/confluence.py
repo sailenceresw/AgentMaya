@@ -26,7 +26,11 @@ def score_confluence(intent: TradeIntent, sig: SignalObject,
         factors.append("volume")
 
     cvd_dir = "bullish" if intent.direction == "long" else "bearish"
-    if sig.cvd_divergence == cvd_dir or (sig.cvd_1m > 0) == (intent.direction == "long"):
+    # A flipped setup reads delta the other way round, so its CVD factor is
+    # scored on that reading; otherwise the factor would always count against
+    # the very condition the setup requires.
+    cvd_1m = -sig.cvd_1m if intent.setup_name.endswith("_cvd_flip") else sig.cvd_1m
+    if sig.cvd_divergence == cvd_dir or (cvd_1m > 0) == (intent.direction == "long"):
         score += 1
         factors.append("cvd")
 

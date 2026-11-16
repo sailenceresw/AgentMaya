@@ -57,7 +57,8 @@ register(Hypothesis(
 
 
 # -- pipeline hypotheses ----------------------------------------------------- #
-def pipeline_samples(data: dict[str, list[Candle]], **overrides) -> list[Sample]:
+def pipeline_samples(data: dict[str, list[Candle]], timeframe: str = "1m",
+                     **overrides) -> list[Sample]:
     """Run the real graph over ``data`` and return its trades as samples.
 
     This is the backtester's own loop (same nodes, same risk layer), so a
@@ -79,7 +80,7 @@ def pipeline_samples(data: dict[str, list[Candle]], **overrides) -> list[Sample]
     out: list[Sample] = []
     for symbol, candles in data.items():
         settings = base.model_copy(update={
-            "symbol": symbol, "timeframe": "1m", "mode": base.mode.SIM,
+            "symbol": symbol, "timeframe": timeframe, "mode": base.mode.SIM,
             "llm_enabled": False, "lessons_veto_enabled": False, **overrides})
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
@@ -122,4 +123,15 @@ register(Hypothesis(
     timeframe="1m",
     blocked="needs trade-level (aggTrade) history; the kline cache has no ticks, "
             "and 15s bars are not faked from 1m candles",
+))
+
+
+register(Hypothesis(
+    id="cvd_flip",
+    description="Liquidity sweep and compression breakout with the CVD confirmation "
+                "reversed, on 15m bars, nothing else enabled.",
+    generate=lambda data: pipeline_samples(
+        data, timeframe="15m", cvd_flip_setups_enabled=True,
+        setups_only="liquidity_sweep_choch_cvd_flip,compression_breakout_cvd_flip"),
+    timeframe="15m",
 ))

@@ -868,6 +868,21 @@ The maker fee and fill rate are assumptions, not venue measurements. The
 holdout pass rule (30 trades, mean net above zero, t of 2.0) is also a choice
 made when the harness was written.
 
+Declared hypotheses that run the real graph (`pipeline_samples`) instead of a
+bar-level rule:
+
+| id | Bars | What it tests |
+|---|---|---|
+| `baseline_1m_setups` | 1m | the setups as shipped |
+| `mtf_bias_filter` | 1m | the same setups, taken only with the 15m bias |
+| `cvd_flip` | 15m | sweep and compression setups with the CVD confirmation reversed, nothing else on |
+
+`cvd_flip` exists because the README study found positive delta ahead of
+negative returns. `MAYA_CVD_FLIP_SETUPS_ENABLED=true` adds the two flipped
+setups (`liquidity_sweep_choch_cvd_flip`, `compression_breakout_cvd_flip`) to
+a normal run; the originals are unchanged. `MAYA_SETUPS_ONLY=name,name` runs
+only the named setups.
+
 To add a hypothesis, write a generator and `register()` it in
 `maya/research/hypotheses.py` under a new id. Changing an existing entry after
 seeing its result is tuning.
