@@ -19,6 +19,10 @@ ccxt>=4.2.0
 # Verified against 17.6: every REST method the preflight calls exists there.
 binance-sdk-derivatives-trading-usds-futures>=17.6,<18
 
+# Optional Hyperliquid broker (only imported when MAYA_HL_BROKER=sdk).
+# Signatures checked against 0.24.0.
+hyperliquid-python-sdk>=0.24,<1
+
 # Optional real-time WebSocket ingestion (only used when MAYA_USE_WEBSOCKET=true)
 websockets>=12.0
 

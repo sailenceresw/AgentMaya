@@ -64,8 +64,10 @@ class FeeModel:
         if settings.venue is Venue.HYPERLIQUID:
             maker = settings.fee_maker_bps if settings.fee_maker_bps is not None else HL_MAKER_BPS
             taker = settings.fee_taker_bps if settings.fee_taker_bps is not None else HL_TAKER_BPS
+            # The builder fee is MetaMask's. Orders sent with the SDK carry none.
+            default_builder = 0.0 if settings.hl_broker == "sdk" else HL_BUILDER_CAP_BPS
             builder = (settings.builder_fee_bps if settings.builder_fee_bps is not None
-                       else HL_BUILDER_CAP_BPS)
+                       else default_builder)
             return cls(maker * _BP, taker * _BP, builder * _BP, tp_is_maker=False)
         maker = settings.fee_maker_bps if settings.fee_maker_bps is not None else BINANCE_MAKER_BPS
         taker = settings.fee_taker_bps if settings.fee_taker_bps is not None else BINANCE_TAKER_BPS
