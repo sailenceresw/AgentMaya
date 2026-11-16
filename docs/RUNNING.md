@@ -912,6 +912,7 @@ was written before any result existed.
 python -m maya.research list                      # declared hypotheses
 python -m maya.research run cvd_follow_baseline   # test on the research window
 python -m maya.research registry                  # every test so far, and the next threshold
+python -m maya.research failures                  # one lesson per failed test
 python -m maya.research holdout <id>              # once, and only after a research pass
 ```
 
@@ -935,12 +936,23 @@ How a test is judged:
   `id, description, tested_at, t_stat, passed_gate, reason`. A test that
   raises still writes its row. There is no delete.
 
+Failed tests are remembered. Each one stores a one-line lesson built from the
+first reason it failed, such as `cvd_flip blocked in research: mean net -3.10
+bps is not above zero after costs`. `python -m maya.research failures` lists
+them, and `run` prints them before testing anything new. `run` also refuses an
+id that already has a research row, because the same test on the same data
+gives the same answer and only raises the threshold for later ideas; `--rerun`
+overrides that when the data or code has changed. No memory library is used
+for this (no mem0, no dspy); the registry is enough until something passes
+the holdout.
+
 Cost presets (`maya/research/costs.py`):
 
 | Preset | Per side | Round trip | Fills |
 |---|---|---|---|
 | `taker` (default) | 4 bps fee + 1 bp slippage | 10 bps | all |
 | `maker` | 2 bps fee, no slippage | 4 bps | 60%, seeded |
+| `maker_filled` | 2 bps fee, no slippage | 4 bps | all (the generator simulated the fills) |
 
 The maker fee and fill rate are assumptions, not venue measurements. The
 holdout pass rule (30 trades, mean net above zero, t of 2.0) is also a choice

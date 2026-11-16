@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     t_stat       REAL,
     passed_gate  INTEGER NOT NULL,
     reason       TEXT,
-    kind         TEXT NOT NULL DEFAULT 'research'
+    kind         TEXT NOT NULL DEFAULT 'research',
+    lesson       TEXT
 );
 CREATE TABLE IF NOT EXISTS holdout_runs (
     id      TEXT PRIMARY KEY,
@@ -43,6 +44,18 @@ class RegistryRow:
     passed_gate: bool
     reason: str
     kind: str
+    lesson: str = ""
+
+
+def make_lesson(hypothesis_id: str, reason: str, kind: str = "research") -> str:
+    """One short line saying a hypothesis is blocked and why.
+
+    Built from the gate's own failure text, shortened to its first clause, so
+    the lesson can never say something the test did not find.
+    """
+    first = (reason or "no reason recorded").split(";")[0].strip()
+    where = "on the holdout" if kind == "holdout" else "in research"
+    return f"{hypothesis_id} blocked {where}: {first}"
 
 
 class HoldoutAlreadyUsed(RuntimeError):
@@ -55,18 +68,23 @@ class HypothesisRegistry:
         self._lock = threading.RLock()
         with self._lock:
             self.conn.executescript(_SCHEMA)
+            # Databases created before the lesson column existed.
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(hypotheses)")}
+            if "lesson" not in cols:
+                self.conn.execute("ALTER TABLE hypotheses ADD COLUMN lesson TEXT")
             self.conn.commit()
 
     def record(self, hypothesis_id: str, description: str, t_stat: float | None,
                passed_gate: bool, reason: str, kind: str = "research",
                tested_at: int | None = None) -> None:
+        lesson = "" if passed_gate else make_lesson(hypothesis_id, reason, kind)
         with self._lock:
             self.conn.execute(
                 "INSERT INTO hypotheses (id, description, tested_at, t_stat, passed_gate, "
-                "reason, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "reason, kind, lesson) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (hypothesis_id, description,
                  int(time.time() * 1000) if tested_at is None else tested_at,
-                 t_stat, int(passed_gate), reason, kind))
+                 t_stat, int(passed_gate), reason, kind, lesson))
             self.conn.commit()
 
     def count_tests(self) -> int:
@@ -79,10 +97,19 @@ class HypothesisRegistry:
     def rows(self) -> list[RegistryRow]:
         with self._lock:
             cur = self.conn.execute(
-                "SELECT id, description, tested_at, t_stat, passed_gate, reason, kind "
-                "FROM hypotheses ORDER BY row")
-            return [RegistryRow(r[0], r[1] or "", r[2], r[3], bool(r[4]), r[5] or "", r[6])
+                "SELECT id, description, tested_at, t_stat, passed_gate, reason, kind, "
+                "lesson FROM hypotheses ORDER BY row")
+            return [RegistryRow(r[0], r[1] or "", r[2], r[3], bool(r[4]), r[5] or "", r[6],
+                                r[7] or "")
                     for r in cur.fetchall()]
+
+    def failures(self) -> list[RegistryRow]:
+        """Every failed test, oldest first. Read this before proposing a new
+        hypothesis: an idea already blocked should not come back renamed."""
+        return [r for r in self.rows() if not r.passed_gate]
+
+    def research_rows_for(self, hypothesis_id: str) -> list[RegistryRow]:
+        return [r for r in self.rows() if r.id == hypothesis_id and r.kind == "research"]
 
     def has_research_pass(self, hypothesis_id: str) -> bool:
         with self._lock:
