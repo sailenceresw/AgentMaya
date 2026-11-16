@@ -79,3 +79,7 @@ class SignalObject:
     # Higher-timeframe chart reading, keyed by timeframe label ('15m', '1h').
     # Empty until enough 1m candles have been folded to close one HTF bar.
     htf: dict[str, HTFContext] = field(default_factory=dict)
+    # Kronos forecast reading (maya.signals.kronos_signal.KronosSignal), or
+    # None when Kronos is off or has too little history. Refreshed when a bar
+    # of its timeframe closes. Nothing in the strategy reads it yet.
+    kronos: Optional[object] = None

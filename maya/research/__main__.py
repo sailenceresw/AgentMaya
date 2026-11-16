@@ -78,6 +78,9 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     if hyp.blocked:
         print(f"blocked: {hyp.id} cannot be tested yet: {hyp.blocked}", file=sys.stderr)
         return 4
+    if hyp.precheck is not None and (why := hyp.precheck()):
+        print(f"cannot run {hyp.id} here: {why}", file=sys.stderr)
+        return 4
     data = load_data([s.strip() for s in a.symbols.split(",") if s.strip()],
                      a.timeframe or hyp.timeframe, a.start, a.end, loader=loader)
     try:

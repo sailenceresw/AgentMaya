@@ -517,6 +517,53 @@ logs why. It runs before the risk layer, cannot approve or size anything, and
 `MAYA_LESSONS_VETO_ENABLED=false` turns it off. Its effect on results has not
 been measured.
 
+## Kronos forecast input (optional, off by default)
+
+[Kronos](https://github.com/shiyu-coder/Kronos) is an MIT-licensed model
+pre-trained on candlestick data. Maya uses it as one more reading that Iris
+attaches to each signal, beside CVD and the volume profile. It is not an
+agent and replaces nothing. Nothing in the strategy trades on it; it stays an
+input until its hypothesis passes.
+
+Set it up once (Kronos is not on PyPI):
+
+```bash
+git clone https://github.com/shiyu-coder/Kronos ~/Kronos
+pip install -r ~/Kronos/requirements.txt
+```
+
+```bash
+MAYA_KRONOS_ENABLED=true MAYA_KRONOS_REPO_PATH=~/Kronos python -m maya
+```
+
+The first forecast downloads `NeoQuasar/Kronos-small` and
+`NeoQuasar/Kronos-Tokenizer-base` from Hugging Face.
+
+How it works:
+
+- When a 15m bar closes (`MAYA_KRONOS_TIMEFRAME`), the newest 256 closed bars
+  (`MAYA_KRONOS_LOOKBACK`, at most 512) go to the model, which forecasts 4 bars
+  ahead (`MAYA_KRONOS_PRED_LEN`). Three sampled paths are averaged at
+  temperature 1.0 and top_p 0.9.
+- The reading is `long` only if the forecast close beats the last close by
+  more than the round-trip cost plus `MAYA_KRONOS_MARGIN_BPS` (5), `short` on
+  the mirror, otherwise no direction.
+- It lands on `SignalObject.kronos`. The risk layer never sees it.
+- Forecasts are cached in `data/kronos_cache.db`, keyed by the exact input
+  bars and settings, so a backtest computes each one once.
+- If a forecast fails, the reading is dropped for that bar and the candle is
+  processed as usual.
+
+It runs on CPU when there is no GPU, which is slow; keep the lookback and
+sample count modest.
+
+`python -m maya.research run kronos_small_15m` tests it: one decision every
+16 bars, hold 4 bars, taker costs. The CLI refuses to start if Kronos is not
+installed, and a refusal writes no registry row.
+
+Not verified: the loading code follows the Kronos README and has never been
+run against the real model. Tests use a stand-in predictor.
+
 ## Post-only entry simulation (paper, sim and backtest)
 
 By default the paper broker fills every limit entry at once at the intent

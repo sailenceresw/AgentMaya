@@ -50,7 +50,8 @@ maya/
   fees.py          per-venue fee model (maker/taker legs + MetaMask builder fee)
   data/            feeds (sim/scenario/ccxt REST/websocket), scheduler, watchdog, download
   signals/         CVD, volume profile, absorption, AMT, ATR, patterns, HTF folding,
-                   mtf.py (15m bias, 15s trigger bars; both off by default)
+                   mtf.py (15m bias, 15s trigger bars; both off by default),
+                   kronos_signal.py (optional forecast reading for Iris, off by default)
   strategy/        3 setups, confluence, optional LLM veto (Claude, structured verdict)
   agents/          the desk (Atlas/Echo/Flow/Sentinel) — analysis/veto only, never a signal
   risk/            RiskManager: hard limits, kill switch, sizing, liquidation + fee gates
