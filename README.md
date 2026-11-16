@@ -217,13 +217,13 @@ Open, in the order they should happen:
 2. Run `python -m maya.check_hyperliquid --smoke` on Hyperliquid testnet and
    fix whatever the first real responses show.
 3. Decide whether the weekly loss limit (8%) should stay tighter than the
-   daily one (10%).
+   daily one (10%). In simulation the daily limit never fires on a $10
+   account and the weekly one halts most weeks (see the Monte Carlo section
+   of `docs/RUNNING.md`).
 4. Get trade-level history so `mtf_15s_trigger` can be tested.
 5. Install Kronos and run `kronos_small_15m`.
 6. Add a position monitor for the Hyperliquid SDK path, so exits are booked
    at the real fill price.
-7. Re-run the Monte Carlo figures in `docs/RUNNING.md` under the current
-   limits.
 
 Not before real money:
 
