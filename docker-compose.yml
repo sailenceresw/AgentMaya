@@ -1,0 +1,13 @@
+services:
+  maya:
+    build: .
+    image: agentmaya:latest
+    env_file: .env
+    # Keep the agent running 24/7; restarts on crash but not on manual stop.
+    restart: unless-stopped
+    # Persist the cached historical klines (and anything else under data/) so
+    # they survive container recreation and aren't re-downloaded.
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MAYA_LOG_LEVEL=INFO
