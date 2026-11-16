@@ -1074,9 +1074,41 @@ python -m maya.backtest.monte_carlo --compound --days 252     # annual path inst
 python -m maya.backtest.monte_carlo --json                    # machine-readable
 ```
 
-> The worked figures in this section were computed under the earlier limits
-> (20x, 5 trades a day, 3% daily halt, 5x notional cap) and have not been
-> re-run. The simulator itself reads the current `RiskLimits`.
+### A $10 account under the current limits
+
+Re-run on 2026-11-16 with the current `RiskLimits` (10x, 10 trades a day, 10%
+daily halt, 8% weekly halt, 10x notional cap):
+
+```bash
+python -m maya.backtest.monte_carlo --start-equity 10 --risk-model fixed_pct \
+  --leverage 10 --stop-dist 0.5 --trades-per-day 5 --win-rate 0.25
+```
+
+$10 equity, 3% risk, 0.5% stop, so a $60 position risking $0.30. Costs are
+the simulator's default (0.113% of notional a round trip, which is 22.7% of
+every risk unit). 1,260,000 simulated days per row:
+
+| Win rate assumed | Mean day | Median day | Worst day | Weeks halted by the 8% weekly limit | Days halted by the 10% daily limit |
+|---|---|---|---|---|---|
+| 20% | -0.87% | -3.68% | -7.23% | 68.9% | 0% |
+| 25% | +0.10% | -3.68% | -7.23% | 57.6% | 0% |
+| 30% | +1.44% | -0.53% | -7.23% | 46.6% | 0% |
+| 45% | +8.34% | 0.00% | -7.23% | 21.0% | 0% |
+
+How to read it:
+
+- The win rates are inputs, not findings. The only measured figure for this
+  strategy is the README's: no predictive signal. Break-even here is a 24.5%
+  win rate, and nothing measured says Maya reaches it.
+- A loss costs 3.68% of equity once fees are in. Two in a row is 7.2% and
+  starts the cooldown, so no day loses more than that. **The 10% daily limit
+  never fires.**
+- A third loss in the same week crosses 8%, and the weekly limit halts
+  trading until the next week. At a 25% win rate that happens in more than
+  half of all weeks. As the limits stand, the weekly limit is the one that
+  governs a $10 account, and it allows about three losing trades a week.
+- Through MetaMask the round trip is up to 0.26%, more than twice the cost
+  used here, so real results would be worse than every row.
 
 The reported unit is a **day**, matching the cadence the system runs at: a 1m
 strategy with a trades-per-day cap and a daily-loss halt. Internally it
@@ -1106,12 +1138,13 @@ The system sizes positions one of two ways, set by `MAYA_SIZING_MODE`:
 |---|---|---|---|
 | `margin` (default) | commit `MAYA_MARGIN_PER_TRADE_USD` of collateral at `MAYA_LEVERAGE` | `margin x leverage` | **position size** |
 | `risk` | size so a stop-out loses `MAYA_RISK_PER_TRADE_USD` | `risk / stop distance` | margin locked only |
+| `risk_pct` | size so a stop-out loses `MAYA_RISK_PER_TRADE_PCT` of equity | `equity x pct / stop distance` | margin locked only |
 
-Defaults are **$20 margin at 20x = $400 notional**. On a 0.7% stop that risks
-**$2.80** per trade, 0.28% of a $1,000 account.
+Defaults are **$20 margin at 10x = $200 notional**. On a 0.7% stop that risks
+**$1.40** per trade, 0.14% of a $1,000 account.
 
 > **Leverage is not risk.** In `risk` mode, position size comes from the stop
-> distance, so 5x and 20x produce *identical* P&L — leverage only changes how
+> distance, so 5x and 10x produce *identical* P&L — leverage only changes how
 > much collateral is tied up and where liquidation sits. It changes your
 > exposure only in `margin` mode, where it sets the position size directly.
 > `tests/test_monte_carlo.py` pins this.
@@ -1119,9 +1152,9 @@ Defaults are **$20 margin at 20x = $400 notional**. On a 0.7% stop that risks
 Margin-mode sizing is additionally clamped by `MAX_RISK_PER_TRADE_USD`, so an
 unusually wide stop cannot turn a "$20 trade" into a much larger loss.
 
-**Liquidation.** At 20x with 0.5% maintenance margin, liquidation is a **4.50%**
-adverse move while the stop sits at 0.70% — the stop consumes 16% of the
-buffer. `MAX_LEVERAGE` is 20; `Settings` *rejects* anything higher rather than
+**Liquidation.** At 10x with 0.5% maintenance margin, liquidation is a **9.50%**
+adverse move while the stop sits at 0.70% — the stop consumes 7% of the
+buffer. `MAX_LEVERAGE` is 10; `Settings` *rejects* anything higher rather than
 silently clamping it, because a config typo that doubles position size is
 exactly what the hard limits exist to catch.
 
@@ -1129,9 +1162,9 @@ exactly what the hard limits exist to catch.
 *price move*, so a 40% threshold demanded a 40% move in BTC — which never
 happens intraday, and meant **the risk node rejected every single trade in
 every mode**. It now screens `TradeIntent.roi_on_margin_pct(leverage)`: the
-scenario's 4.64% move at 20x is a 92.8% return on collateral and passes. Note
+scenario's 4.64% move at 10x is a 46.4% return on collateral and passes. Note
 this makes the gate leverage-dependent by design — the same setup that clears
-40% at 20x does not at 5x.
+40% at 10x does not at 5x.
 
 **Cost drag is the number to watch.** Fees plus 2bps of slippage per side come
 to 0.141% of notional, which against a 0.7% stop is **20.1% of every dollar you
@@ -1157,12 +1190,14 @@ conclusions substantially:
    `RiskManager.on_trade_closed` resets `consecutive_losses` *only on a win* —
    so a run sitting at 2+ losses re-arms the cooldown on every further loss.
 
-At the **current defaults** ($20 margin at 20x, notional $400, risking $2.80 a
-trade) the **mean day is +0.38%** — you are risking 0.28% of the account per
-trade, so the account cannot move fast. Switch to
-`--risk-model fixed_usd --risk-usd 20` (risking $20 instead of committing $20)
-and the same strategy gives a **+2.57% mean day**, because position size is
-~7x larger. The difference is sizing, not leverage — both runs are 20x.
+At the **current defaults** ($20 margin at 10x, notional $200, risking $1.40 a
+trade) the **mean day is +0.20%** at the assumed 45% win rate — you are
+risking 0.14% of the account per trade, so the account cannot move fast.
+Switch to `--risk-model fixed_usd --risk-usd 20` (risking $20 instead of
+committing $20) and the same assumptions give a **+2.69% mean day**, because
+position size is ~14x larger. The difference is sizing, not leverage — both
+runs are 10x. (Re-run 2026-11-16 under the current limits. The 45% win rate
+is an input; it has not been measured.)
 
 The **median day is +0.00% in both**, and that is not a contradiction: the
 system takes ~1.3 trades a day and ~20% of days have no qualifying setup at

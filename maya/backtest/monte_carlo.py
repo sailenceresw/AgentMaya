@@ -285,7 +285,9 @@ def simulate_detailed(params: SimParams) -> SimResult:
     cost_mult = params.cost_frac_of_notional  # fees + slippage + funding
     daily_limit = RiskLimits.DAILY_LOSS_LIMIT_PCT / 100
     weekly_limit = RiskLimits.WEEKLY_LOSS_LIMIT_PCT / 100
-    floor = RiskLimits.EQUITY_FLOOR_USDT
+    # Same floor the live risk manager uses. The flat $50 figure sits above
+    # a small account's whole balance and would halt it before its first trade.
+    floor = RiskLimits.equity_floor(params.start_equity)
     lev = params.leverage
     # A stop wider than the liquidation buffer means the position is wiped
     # before the stop can ever fill — the loss is the whole margin, not the

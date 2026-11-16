@@ -286,3 +286,15 @@ def test_summary_percentiles_are_ordered():
     assert summary["p25_daily_return_pct"] <= summary["median_daily_return_pct"]
     assert summary["median_daily_return_pct"] <= summary["p75_daily_return_pct"]
     assert summary["p75_daily_return_pct"] <= summary["p95_daily_return_pct"]
+
+
+def test_ten_dollar_account_is_not_halted_by_the_flat_fifty_dollar_floor():
+    """Regression: the simulator used the flat $50 equity floor, which is
+    above a $10 account's whole balance, so it took zero trades and reported
+    every day as flat. It now uses RiskLimits.equity_floor like the live
+    risk manager."""
+    result = simulate_detailed(SimParams(
+        start_equity=10.0, risk_model="fixed_pct", leverage=10, avg_stop_distance_pct=0.5,
+        trades_per_day_mean=5.0, simulations=200, days=20))
+    assert result.mean_trades_per_day > 0
+    assert any(r != 0 for r in result.weekly_returns)
