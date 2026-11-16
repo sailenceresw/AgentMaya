@@ -21,6 +21,7 @@ from maya.execution.engine import ExecutionEngine
 from maya.journal.store import TradeJournal
 from maya.learning.lessons import LessonsReviewer
 from maya.risk.manager import RiskManager, SystemState
+from maya.signals import mtf
 from maya.signals.processor import SignalProcessor
 from maya.state import TradingState
 from maya.strategy.engine import StrategyEngine
@@ -82,7 +83,14 @@ class TradingNodes:
         # ...but no new entries while a position is open (single-position system).
         if self.execution.has_position:
             return {"intent": None}
-        return {"intent": self.strategy.evaluate(signal, ctx)}
+        intent = self.strategy.evaluate(signal, ctx)
+        if intent is not None and self.settings.mtf_15s_trigger_enabled:
+            bars = mtf.build_trigger_bars(state["candle"].trades)
+            if not mtf.trigger_fires(intent.direction, intent.stop_loss, bars):
+                logger.debug("15s trigger did not confirm {} {} ({} bars)",
+                             intent.direction, intent.setup_name, len(bars))
+                return {"intent": None}
+        return {"intent": intent}
 
     def learning_node(self, state: TradingState) -> TradingState:
         """Read past trades for this setup and context; veto a losing one.

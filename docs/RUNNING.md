@@ -517,6 +517,44 @@ logs why. It runs before the risk layer, cannot approve or size anything, and
 `MAYA_LESSONS_VETO_ENABLED=false` turns it off. Its effect on results has not
 been measured.
 
+## Multi-timeframe layers (15m bias, 1m staging, 15s trigger)
+
+Two optional layers sit around the existing 1m setups. Both are off by
+default because neither has been measured.
+
+| Setting | What it does |
+|---|---|
+| `MAYA_MTF_BIAS_FILTER_ENABLED=true` | A setup may only fire in the direction of the 15m bias. No bias, no trade. |
+| `MAYA_MTF_15S_TRIGGER_ENABLED=true` | The entry also needs the last 15-second bar of the closing minute to confirm. |
+
+**Bias (15m).** One value per closed 15m bar. `long` when the bar closed above
+the session VWAP (reset each UTC day) and the confirmed swing structure is
+`higher_highs`. `short` on the mirror. Otherwise `none`. The rule is in
+`maya/signals/mtf.py` and has no thresholds. It needs `15m` in
+`MAYA_HTF_TIMEFRAMES`, which is the default.
+
+**Trigger (15s).** Binance kline streams stop at one minute (checked against
+the `kline_<interval>` list the websocket feed already uses), so 15-second
+bars are built from the `@aggTrade` ticks the websocket feed attaches to each
+candle. Each bar carries buy volume, sell volume and delta from the trade
+side flag. For a long, the trigger fires when the last 15s bar has positive
+delta and its low stayed above the setup's stop; shorts mirror that.
+
+Two limits to know:
+
+- The trigger is evaluated when the 1m candle closes. It confirms the entry
+  with the final 15 seconds of order flow and does not enter mid-minute.
+- It needs ticks. Run with `MAYA_USE_WEBSOCKET=true`. On the REST feed or in
+  a backtest there are no ticks, and with the trigger on no trade is taken.
+
+**Testing them.** `python -m maya.research list` shows three hypotheses on 1m
+bars: `baseline_1m_setups`, `mtf_bias_filter` and `mtf_15s_trigger`. The first
+two run the real graph over 1m klines and are compared on the same data and
+cost model. A 24-month 1m run over three symbols takes hours. The 15s
+hypothesis is marked blocked and the CLI refuses it, because the kline cache
+has no ticks and 15s bars are not reconstructed from 1m candles. It stays
+untested until trade-level history is downloaded.
+
 ## Fees: what a trade really costs, and the fee gate
 
 Every trade pays twice, once in and once out. On the MetaMask path it pays

@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     profit_lock_trigger_pct: float = 0.6
     profit_trail_pct: float = 0.3
 
+    # -- multi-timeframe layers (both unmeasured, so both off) -------------- #
+    # Bias filter: a setup may only fire in the direction of the 15m bias
+    # (price against session VWAP plus swing structure). No bias, no trade.
+    mtf_bias_filter_enabled: bool = False
+    # 15s trigger: the entry also needs the last 15-second bar of the closing
+    # minute to confirm. Needs tick data, which only the websocket feed
+    # provides; without ticks no trade is taken while this is on.
+    mtf_15s_trigger_enabled: bool = False
+
     # -- lessons memory ----------------------------------------------------- #
     # Before an entry, past trades of the same setup and direction whose
     # confluence factors overlap by at least ``lessons_similarity`` (Jaccard)

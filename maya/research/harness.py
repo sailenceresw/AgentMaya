@@ -47,6 +47,12 @@ class Hypothesis:
     description: str
     generate: Generator
     cost: str = "taker"
+    # Bar size the generator expects. The CLI loads this unless told otherwise.
+    timeframe: str = "15m"
+    # Set when the hypothesis is declared but cannot be tested yet, with the
+    # reason. A blocked hypothesis is refused before anything runs, so it
+    # writes no registry row and does not raise the threshold.
+    blocked: str = ""
 
     @property
     def cost_model(self) -> CostModel:

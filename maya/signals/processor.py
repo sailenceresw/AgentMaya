@@ -16,6 +16,7 @@ from maya.signals import oscillators as osc
 from maya.signals import patterns as pat
 from maya.signals import technicals as ta
 from maya.signals.models import HTFContext, SignalObject
+from maya.signals.mtf import session_vwap
 from maya.signals.timeframes import TimeframeAggregator, parse_timeframe
 
 WINDOW = 60  # candles retained for profile / phase calculations
@@ -47,7 +48,10 @@ class SignalProcessor:
     def _update_htf(self, candle: Candle) -> None:
         for agg in self.aggregators:
             if agg.update(candle) is not None:
-                self._htf[agg.label] = ta.analyze(list(agg.closed), agg.label)
+                closed = list(agg.closed)
+                ctx = ta.analyze(closed, agg.label)
+                ctx.session_vwap = session_vwap(closed)
+                self._htf[agg.label] = ctx
 
     def process(self, candle: Candle, funding_rate: float = 0.0,
                 long_short_ratio: float = 1.0) -> SignalObject:
