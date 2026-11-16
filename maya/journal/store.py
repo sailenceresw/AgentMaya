@@ -14,6 +14,7 @@ import uuid
 
 
 from maya.execution.engine import TradeResult
+from maya.learning.lessons import derive_lesson
 
 _DAY_MS = 86_400_000
 
@@ -40,6 +41,15 @@ CREATE TABLE IF NOT EXISTS trades (
     confluence_score INTEGER,
     confluences      TEXT,
     exit_reason      TEXT
+);
+CREATE TABLE IF NOT EXISTS lessons (
+    trade_id     TEXT PRIMARY KEY,
+    created_at   INTEGER,
+    setup_name   TEXT,
+    direction    TEXT,
+    reason_code  TEXT,
+    sentence     TEXT,
+    confluences  TEXT
 );
 """
 
@@ -100,7 +110,49 @@ class TradeJournal:
                 "conf": json.dumps(confluences), "reason": result.reason,
             },
             )
+            # Every losing trade leaves a lesson, written in the same commit
+            # as the trade so the two tables cannot disagree.
+            lesson = derive_lesson(
+                setup_name=pos.setup_name, direction=pos.direction,
+                confluences=confluences, exit_reason=result.reason,
+                pnl_usdt=result.pnl_usdt, fees_usdt=result.fees_usdt,
+                minutes_open=(result.exit_ts - pos.opened_ts) / 60_000)
+            if lesson is not None:
+                self.conn.execute(
+                    "INSERT INTO lessons VALUES (?,?,?,?,?,?,?)",
+                    (trade_id, result.exit_ts, pos.setup_name, pos.direction,
+                     lesson.reason_code, lesson.sentence, json.dumps(confluences)))
             self.conn.commit()
+
+    # -- lessons memory ------------------------------------------------------ #
+    def lessons(self, setup_name: str | None = None, limit: int = 100) -> list[dict]:
+        """Lessons from losing trades, newest first."""
+        q = "SELECT * FROM lessons"
+        args: tuple = ()
+        if setup_name is not None:
+            q += " WHERE setup_name = ?"
+            args = (setup_name,)
+        with self._lock:
+            rows = self.conn.execute(q + " ORDER BY created_at DESC LIMIT ?",
+                                     (*args, max(1, int(limit)))).fetchall()
+        return [dict(r) for r in rows]
+
+    def lesson_codes_for(self, setup_name: str, direction: str,
+                         before_ts: int) -> dict[str, int]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT reason_code, COUNT(*) AS n FROM lessons WHERE setup_name = ? "
+                "AND direction = ? AND created_at < ? GROUP BY reason_code",
+                (setup_name, direction, before_ts)).fetchall()
+        return {r["reason_code"]: r["n"] for r in rows}
+
+    def closed_trades_for(self, setup_name: str, direction: str,
+                          before_ts: int) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.conn.execute(
+                "SELECT result, confluences FROM trades WHERE setup_name = ? "
+                "AND direction = ? AND timestamp_exit < ?",
+                (setup_name, direction, before_ts)).fetchall()
 
     # -- state reconciliation (spec section 8.4) ---------------------------- #
     # These back the risk-floor counters (trades_today, consecutive_losses,

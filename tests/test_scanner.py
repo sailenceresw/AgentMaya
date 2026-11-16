@@ -18,7 +18,7 @@ from maya.strategy.engine import StrategyEngine
 
 def _settings(**kw) -> Settings:
     base = dict(mode=RunMode.PAPER, venue=Venue.HYPERLIQUID, start_equity=1000,
-                leverage=20, min_roi_pct=10.0, scan_min_volume_usd=1e6, scan_max_coins=5)
+                leverage=10, min_roi_pct=10.0, scan_min_volume_usd=1e6, scan_max_coins=5)
     base.update(kw)
     return Settings(**base)
 
@@ -46,7 +46,7 @@ def _markets():
         Market("BTC", 2e9, 40, -0.00001, 66800.0),
         Market("ETH", 9e8, 25, 0.00001, 3150.0),
         Market("THIN", 5e5, 10, 0.0, 1.0),        # below the volume floor
-        Market("LOWLEV", 5e8, 10, 0.0, 2.0),      # cannot take 20x
+        Market("LOWLEV", 5e8, 5, 0.0, 2.0),       # cannot take 10x
     ]
 
 

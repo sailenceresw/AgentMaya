@@ -355,7 +355,7 @@ because the venue liquidates first and keeps the whole margin. That is the
 one way a trade could lose more than its sized risk. The estimate is
 `1/leverage − 1.25%` maintenance margin (Hyperliquid's BTC figure, the more
 conservative of the two venues), and the stop must sit within 80% of that
-distance. At the default 20x, stops wider than 3% are refused.
+distance. At the default and maximum 10x, stops wider than 7% are refused.
 
 What is **still** unverified, and cannot be until the sub-account holds funds:
 
@@ -447,6 +447,75 @@ venue hours. Testnet first.
 
 `MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
 requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.
+
+## Risk rules and small accounts
+
+The hard limits live in `RiskLimits` in `maya/config.py`. Only a person edits
+them, and the risk code imports no LLM.
+
+| Limit | Value |
+|---|---|
+| Risk per trade | 3% of equity, and never more than $20 |
+| Position notional | 10x equity |
+| Leverage | 10x maximum, isolated margin |
+| Trades per day | 10 |
+| Daily loss | 10% of the day's starting equity, lifts the next UTC day |
+| Weekly loss | 8% of the week's starting equity |
+| Minimum R:R | 1:4, and at least 2.5 after fees |
+| Fee gate | fees may take at most 20% of the move to target (target at least 5 round trips) |
+| Equity floor | $50, or half the starting equity if that is smaller |
+
+The weekly limit was not part of the change that raised the daily one, so it
+is now the tighter of the two. A day that loses 8% or more halts trading until
+the next week, and the 10% daily limit only acts alone when the week is
+already in profit. Raise `WEEKLY_LOSS_LIMIT_PCT` if that is not what you want.
+
+For a $10 account at 10x:
+
+```bash
+MAYA_START_EQUITY=10 MAYA_SIZING_MODE=risk_pct MAYA_RISK_PER_TRADE_PCT=3 \
+MAYA_LEVERAGE=10 python -m maya
+```
+
+`risk_pct` sizes each trade as `(equity x 3%) / stop distance`, so a 0.5% stop
+gives a $60 position and anything tighter than 0.3% is capped at $100.
+Hyperliquid rejects orders under $10 notional, which a $10 account clears at
+any stop tighter than 3%.
+
+Fees are the hard part at this size. A $100 round trip costs about $0.10 at
+Binance taker rates and up to $0.26 through MetaMask, against $0.30 of risk.
+Maya logs a `fee drag` warning whenever a round trip costs more than 1% of
+equity. The warning does not block the trade; the fee gate above is what
+rejects trades that fees would eat.
+
+### Profit protection
+
+Every position has a stop from entry, and a stop only ever moves toward
+profit. `ExecutionEngine._tighten_stop` is the one place a stop changes, and
+it refuses any move that is not closer to profit.
+
+- When a candle closes 0.6% in favour (`MAYA_PROFIT_LOCK_TRIGGER_PCT`), the
+  stop moves to the entry price plus round-trip fees.
+- After that it trails 0.3% behind the best price seen
+  (`MAYA_PROFIT_TRAIL_PCT`).
+
+A move takes effect on the next bar. The trail will close most winners before
+they reach a 1:4 target, so realised R:R will usually be lower than planned.
+The entry gate still requires 1:4.
+
+### Lessons memory
+
+Every losing trade writes a row to the `lessons` table in the journal: trade
+id, setup, direction, a reason code and one sentence. The codes are
+`fees_ate_profit`, `against_15m_trend`, `ran_out_of_time`, `stopped_fast`,
+`stopped_out` and `closed_at_loss`.
+
+Before each entry the `learning` node (Mentor) looks up past trades of the
+same setup and direction whose confluence factors overlap by at least 75%.
+With five or more such trades and a win rate under 20%, it drops the entry and
+logs why. It runs before the risk layer, cannot approve or size anything, and
+`MAYA_LESSONS_VETO_ENABLED=false` turns it off. Its effect on results has not
+been measured.
 
 ## Fees: what a trade really costs, and the fee gate
 
@@ -778,8 +847,12 @@ python -m maya.backtest.monte_carlo --compound --days 252     # annual path inst
 python -m maya.backtest.monte_carlo --json                    # machine-readable
 ```
 
+> The worked figures in this section were computed under the earlier limits
+> (20x, 5 trades a day, 3% daily halt, 5x notional cap) and have not been
+> re-run. The simulator itself reads the current `RiskLimits`.
+
 The reported unit is a **day**, matching the cadence the system runs at: a 1m
-strategy with a 5-trades-per-day cap and a 3% daily-loss halt. Internally it
+strategy with a trades-per-day cap and a daily-loss halt. Internally it
 still advances a week at a time, because the 8% weekly kill switch can only
 bind across days — so a simulated day sits inside a week with its own history
 rather than being an isolated coin flip. Equity resets weekly (not daily) for
@@ -926,7 +999,7 @@ end-to-end integration run through the LangGraph pipeline.
 `maya/graph.py` builds a `StateGraph` invoked once per candle:
 
 ```
-START → manage (L5) → signal (L2) → strategy (L3) → risk (L4) → execution (L5) → END
+START → manage (L5) → signal (L2) → strategy (L3) → learning (L6) → risk (L4) → execution (L5) → END
 ```
 
 - **manage** advances any open position against the new candle (SL/TP,

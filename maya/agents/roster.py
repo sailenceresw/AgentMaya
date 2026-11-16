@@ -2,7 +2,7 @@
 
 Two tiers, because they do genuinely different jobs:
 
-**Pipeline agents** are the five LangGraph nodes — the assembly line that runs
+**Pipeline agents** are the six LangGraph nodes — the assembly line that runs
 once per candle. Each owns a stage and hands the next one its output.
 
 **Analysts** are the specialists inside Maya. They do not run in sequence; they
@@ -35,6 +35,9 @@ PIPELINE: tuple[AgentRole, ...] = (
     AgentRole("Maya", "strategy", "L3 strategy",
               "The desk. Runs the conference, weighs the analysts, and decides "
               "whether there is a trade."),
+    AgentRole("Mentor", "learning", "L6 lessons",
+              "Reads how this setup did before in the same context and drops "
+              "the trade when that record is a losing one. Can only say no."),
     AgentRole("Sentinel", "risk", "L4 risk",
               "Hard limits and the kill switch. Holds an absolute veto over "
               "everything Maya proposes."),

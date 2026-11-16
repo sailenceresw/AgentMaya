@@ -224,7 +224,7 @@ def test_signed_confidence_encodes_direction():
 def test_roster_covers_every_graph_node():
     from maya.agents.roster import NODE_TO_NAME
 
-    assert set(NODE_TO_NAME) == {"manage", "signal", "strategy", "risk", "execution"}
+    assert set(NODE_TO_NAME) == {"manage", "signal", "strategy", "learning", "risk", "execution"}
     assert NODE_TO_NAME["strategy"] == "Maya"
     assert NODE_TO_NAME["risk"] == "Sentinel"
 

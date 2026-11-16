@@ -19,6 +19,7 @@ from maya.config import (
 )
 from maya.risk.sizing import (
     calculate_margin_notional,
+    calculate_pct_notional,
     calculate_position_notional,
     liquidation_distance_frac,
     margin_required,
@@ -198,7 +199,7 @@ class RiskManager:
             self._halt(f"{self._DAILY_HALT} hit ({daily_dd:.2f}%)")
         if weekly_dd >= RiskLimits.WEEKLY_LOSS_LIMIT_PCT:
             self._halt(f"{self._WEEKLY_HALT} hit ({weekly_dd:.2f}%)")
-        if acc.equity < RiskLimits.EQUITY_FLOOR_USDT:
+        if acc.equity < RiskLimits.equity_floor(acc.start_equity):
             self._halt(f"equity below floor (${acc.equity:.2f})")
         if data_stale:
             self._halt("data feed interrupted")
@@ -281,6 +282,11 @@ class RiskManager:
                 acc.equity, self.settings.margin_per_trade_usd, leverage,
                 intent.entry_price, intent.stop_loss,
             )
+        elif self.settings.sizing_mode == "risk_pct":
+            notional = calculate_pct_notional(
+                acc.equity, self.settings.risk_per_trade_pct,
+                intent.entry_price, intent.stop_loss,
+            )
         else:
             notional = calculate_position_notional(
                 acc.equity, self.settings.risk_per_trade_usd,
@@ -294,6 +300,16 @@ class RiskManager:
         if margin > acc.equity:
             return RiskDecision(
                 False, f"margin ${margin:.2f} exceeds equity ${acc.equity:.2f}")
+
+        # Fees are a share of notional, and at 10x the notional is ten times
+        # the account, so on a small account one round trip can cost more
+        # than 1% of equity. That is worth knowing but is not a reason to
+        # block: the fee gate above already rejected trades fees would eat.
+        fee_usd = notional * self.fees.worst_round_trip(self.order_type)
+        if acc.equity > 0 and fee_usd > 0.01 * acc.equity:
+            logger.warning(
+                "fee drag: round trip ${:.4f} is {:.2%} of equity ${:.2f} "
+                "(notional ${:.2f})", fee_usd, fee_usd / acc.equity, acc.equity, notional)
 
         qty = notional_to_qty(notional, intent.entry_price)
         return RiskDecision(

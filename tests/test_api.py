@@ -28,7 +28,7 @@ def _result(pnl: float = 18.16, result: str = "win") -> TradeResult:
     pos = Position(
         symbol="BTCUSDT", direction="short", setup_name="liquidity_sweep_choch",
         entry_price=66800.0, stop_loss=67388.0, take_profit=63700.0,
-        quantity=0.00599, notional=400.0, leverage=20, opened_ts=1700000600000,
+        quantity=0.00599, notional=400.0, leverage=10, opened_ts=1700000600000,
         confluence_score=7, rr_planned=5.2,
     )
     return TradeResult(pos, 63700.0, pnl, 0.4, 5.2, result, 1700000900000, "take_profit")
@@ -172,7 +172,7 @@ def test_status_reports_real_account_state(live_api):
     data = json.loads(body)["data"]
     assert data["account"]["equity"] == pytest.approx(nodes.risk.account.equity, abs=0.01)
     assert data["run"]["trades"] == 1
-    assert data["config"]["leverage"] == 20
+    assert data["config"]["leverage"] == 10
     assert data["config"]["sizing_mode"] == "margin"
 
 

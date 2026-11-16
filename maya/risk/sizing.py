@@ -27,18 +27,36 @@ def stop_distance_frac(entry: float, sl: float) -> float:
     return abs(entry - sl) / entry
 
 
+def max_risk_usd(account_equity: float) -> float:
+    """The most a single stop-out may lose: the smaller of the fixed USD
+    ceiling and ``MAX_RISK_PER_TRADE_PCT`` of equity. Every sizing mode is
+    clamped by this, so no configuration can risk more."""
+    return max(0.0, min(RiskLimits.MAX_RISK_PER_TRADE_USD,
+                        account_equity * RiskLimits.MAX_RISK_PER_TRADE_PCT / 100.0))
+
+
 def calculate_position_notional(account_equity: float, risk_amount: float,
                                 entry: float, sl: float) -> float:
     """Notional position size that risks a fixed USD amount to the stop.
 
-    Capped at ``POSITION_NOTIONAL_CAP_MULT`` x equity (spec 7.1).
+    The amount is clamped by :func:`max_risk_usd` and the notional by
+    ``POSITION_NOTIONAL_CAP_MULT`` x equity.
     """
     sl_distance_pct = stop_distance_frac(entry, sl)
-    if sl_distance_pct <= 0:
+    if sl_distance_pct <= 0 or risk_amount <= 0:
         return 0.0
-    notional = risk_amount / sl_distance_pct
+    notional = min(risk_amount, max_risk_usd(account_equity)) / sl_distance_pct
     cap = account_equity * RiskLimits.POSITION_NOTIONAL_CAP_MULT
     return min(notional, cap)
+
+
+def calculate_pct_notional(account_equity: float, risk_pct: float,
+                           entry: float, sl: float) -> float:
+    """Notional that risks ``risk_pct`` percent of equity to the stop:
+    ``(equity x risk_pct) / stop_distance_pct``, then the same clamps as
+    :func:`calculate_position_notional`."""
+    return calculate_position_notional(
+        account_equity, account_equity * risk_pct / 100.0, entry, sl)
 
 
 def calculate_margin_notional(account_equity: float, margin_amount: float,
@@ -48,9 +66,9 @@ def calculate_margin_notional(account_equity: float, margin_amount: float,
     ``margin_amount x leverage``, then clamped so that none of the hard limits
     is breached:
 
-    1. the spec's notional cap (5x equity),
+    1. the notional cap (``POSITION_NOTIONAL_CAP_MULT`` x equity),
     2. what the account could margin at all (``equity x leverage``),
-    3. ``MAX_RISK_PER_TRADE_USD`` — the stop-out loss implied by this notional
+    3. :func:`max_risk_usd` — the stop-out loss implied by this notional
        must not exceed the per-trade risk ceiling. Without this a wide stop
        would quietly turn a "$20 position" into a much larger loss, which is
        the main hazard of sizing by margin rather than by risk.
@@ -63,7 +81,7 @@ def calculate_margin_notional(account_equity: float, margin_amount: float,
     notional = min(notional,
                    account_equity * RiskLimits.POSITION_NOTIONAL_CAP_MULT,
                    account_equity * leverage,
-                   RiskLimits.MAX_RISK_PER_TRADE_USD / sl_distance_pct)
+                   max_risk_usd(account_equity) / sl_distance_pct)
     return max(0.0, notional)
 
 

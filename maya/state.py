@@ -23,4 +23,6 @@ class TradingState(TypedDict, total=False):
     risk_decision: Optional[RiskDecision]
     closed_trade: Optional[TradeResult]
     opened: bool
+    # Why the learning step dropped this bar's intent, or None.
+    lesson_veto: Optional[str]
     halted: bool
