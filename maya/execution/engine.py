@@ -291,15 +291,16 @@ class ExecutionEngine:
         self._outcomes = still
 
     def _protect_profit(self, pos: Position, candle: Candle) -> None:
-        """Profit lock, then trailing stop. Takes effect from the NEXT bar,
-        never the bar that triggered it (the stop/target check above already
-        ran against the old stop).
+        """Profit lock, then an optional trailing stop. Takes effect from the
+        NEXT bar, never the bar that triggered it (the stop/target check above
+        already ran against the old stop).
 
         1. Once a close is ``profit_lock_trigger_pct`` in favour, the stop
            moves to entry plus the round-trip fees, so a reversal from there
            closes flat after costs rather than at a small loss.
-        2. From then on the stop trails ``profit_trail_pct`` behind the best
-           price seen.
+        2. What follows depends on ``profit_trail_mode``: nothing (``off``,
+           the default), a fixed-percent trail (``pct``), or a trail measured
+           in the trade's own initial stop distance (``r``).
 
         Every move goes through :meth:`_tighten_stop`, which refuses anything
         that is not closer to profit than the stop already in place.
@@ -313,18 +314,37 @@ class ExecutionEngine:
             if not long:
                 fav = -fav
             if fav < self.settings.profit_lock_trigger_pct / 100.0:
-                return
+                return self._trail(pos, candle)
             fee_offset = pos.entry_price * self.fees.worst_round_trip(self.order_type)
             lock = pos.entry_price + fee_offset if long else pos.entry_price - fee_offset
             if self._tighten_stop(pos, lock):
                 pos.moved_to_breakeven = True
                 logger.debug("SL locked at breakeven plus fees for {}", pos.symbol)
+        self._trail(pos, candle)
+
+    def _trail(self, pos: Position, candle: Candle) -> None:
+        mode = self.settings.profit_trail_mode
+        long = pos.direction == "long"
+        if mode == "pct":
+            # The fixed-percent trail only ever followed the lock.
             if not pos.moved_to_breakeven:
                 return
-
-        trail = self.settings.profit_trail_pct / 100.0
-        target = pos.best_price * (1 - trail) if long else pos.best_price * (1 + trail)
-        self._tighten_stop(pos, target)
+            gap = pos.best_price * self.settings.profit_trail_pct / 100.0
+        elif mode == "r":
+            # One R is the distance from entry to the stop the trade opened
+            # with, so a wide-stop trade gets a wide trail and a tight one a
+            # tight trail. Armed on a close, like the lock, so a single wick
+            # cannot start it.
+            one_r = abs(pos.entry_price - pos.initial_stop_loss)
+            gained = (candle.close - pos.entry_price) * (1 if long else -1)
+            if one_r <= 0 or (not pos.trail_armed
+                              and gained < self.settings.profit_trail_start_r * one_r):
+                return
+            pos.trail_armed = True
+            gap = self.settings.profit_trail_r * one_r
+        else:
+            return
+        self._tighten_stop(pos, pos.best_price - gap if long else pos.best_price + gap)
 
     def _tighten_stop(self, pos: Position, new_stop: float) -> bool:
         """Move the stop to ``new_stop`` if, and only if, that is closer to

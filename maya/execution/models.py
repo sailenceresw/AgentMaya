@@ -28,6 +28,8 @@ class Position:
     # Best price reached since entry (highest high for a long, lowest low for
     # a short). The trailing stop follows this once the profit lock has fired.
     best_price: float | None = None
+    # Set once an R-based trail has started (profit_trail_mode='r').
+    trail_armed: bool = False
 
     def __post_init__(self) -> None:
         if self.initial_stop_loss is None:

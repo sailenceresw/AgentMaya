@@ -494,7 +494,7 @@ Use LIMIT orders for TPs. Split into 2-3 partial closes for scaling out. Move SL
 
 ### 8.3 Position Management Logic
 
-- After +0.6% favorable close → move SL to breakeven plus round-trip fees, then trail it 0.3% behind the best price. A stop only moves toward profit. (As built; the two bullets below are the original design and are not implemented.)
+- After +0.6% favorable close → move SL to breakeven plus round-trip fees. No trail by default; `MAYA_PROFIT_TRAIL_MODE` offers a percent or R-based trail. A stop only moves toward profit. (As built; the two bullets below are the original design and are not implemented.)
 - After TP1 hit (50% closed) → move SL to +0.2% (lock profit)
 - After TP2 hit (25% closed) → trail SL using 1m swing structure
 - If position duration exceeds 4 hours → force close at market

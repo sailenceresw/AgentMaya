@@ -97,10 +97,23 @@ class Settings(BaseSettings):
     # -- profit protection -------------------------------------------------- #
     # Once price has moved this far in favour (percent of entry, on a close),
     # the stop goes to entry plus the round-trip fees, so a reversal from
-    # there costs nothing. After that it trails ``profit_trail_pct`` behind
-    # the best price seen. A stop only ever moves towards profit.
+    # there costs nothing. A stop only ever moves towards profit.
     profit_lock_trigger_pct: float = 0.6
+    # What happens after the lock:
+    # "off": nothing. The trade runs to its target or back to the lock. This
+    #        is the default because the entry gate demands 1:4, and a tight
+    #        trail closes winners long before a 1:4 target can be reached.
+    # "pct": trail ``profit_trail_pct`` percent behind the best price. Kept
+    #        for comparison; at 0.3% it cuts most winners to under 1R.
+    # "r"  : trail ``profit_trail_r`` x the trade's own initial stop distance
+    #        behind the best price, armed only once a close is
+    #        ``profit_trail_start_r`` x that distance in profit. Scales with
+    #        each trade instead of using one number for every market.
+    #        Unmeasured: see hypothesis trail_1r_after_2r.
+    profit_trail_mode: str = "off"
     profit_trail_pct: float = 0.3
+    profit_trail_r: float = 1.0
+    profit_trail_start_r: float = 2.0
 
     # -- Hyperliquid through the official SDK -------------------------------- #
     # "mm"  : orders go through the MetaMask Agent Wallet CLI (the original
@@ -393,7 +406,15 @@ class Settings(BaseSettings):
                 "(RiskLimits.MAX_RISK_PER_TRADE_PCT)")
         return v
 
-    @field_validator("profit_lock_trigger_pct", "profit_trail_pct")
+    @field_validator("profit_trail_mode")
+    @classmethod
+    def _known_trail_mode(cls, v: str) -> str:
+        if v not in ("off", "pct", "r"):
+            raise ValueError(f"profit_trail_mode={v!r} must be 'off', 'pct' or 'r'")
+        return v
+
+    @field_validator("profit_lock_trigger_pct", "profit_trail_pct", "profit_trail_r",
+                     "profit_trail_start_r")
     @classmethod
     def _profit_protection_positive(cls, v: float) -> float:
         if v <= 0:
