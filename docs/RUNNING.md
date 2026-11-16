@@ -1226,7 +1226,8 @@ structured logging plus the journal metrics.
 
 **Implemented & runnable:** all seven layers wired through LangGraph, the three
 setups, confluence scoring, the full hard-limit risk gate + kill switch,
-position sizing, paper execution with SL/TP/breakeven/duration management, the
+position sizing, paper execution with SL/TP, profit lock, trailing stop and
+duration management, the
 SQLite trade journal + metrics, the optional LLM veto, and a ccxt broker/feed
 for paper/testnet/live. A standalone `check_connection.py` diagnostic;
 journal-backed restoration of `trades_today`/`consecutive_losses`/daily PnL
@@ -1236,6 +1237,21 @@ the candle cadence and syncs breakeven stop moves to the exchange; an opt-in
 real-time WebSocket feed (`MAYA_USE_WEBSOCKET=true`); and an event-driven
 backtester that runs the unmodified live pipeline over historical klines
 and reports the spec §14.1 go/no-go gate.
+
+**Added since, and where each stands:**
+
+| Piece | Default | Tested how |
+|---|---|---|
+| Research harness, registry, holdout | n/a | unit tests; no hypothesis run on market data |
+| Small-account risk limits | on | unit tests |
+| Profit lock and trailing stop | on | unit tests on invented bars |
+| Lessons table and veto (`learning` node) | on | unit tests; effect on results not measured |
+| 15m bias filter | off | unit tests; hypothesis not run |
+| 15s trigger | off | unit tests on invented ticks; cannot be backtested without tick history |
+| Flipped-CVD setups | off | unit tests; hypothesis not run |
+| Post-only entry simulation | off | unit tests; fill probability is an assumption |
+| Kronos input | off | unit tests with a stand-in predictor; real model never loaded |
+| Hyperliquid SDK broker | off | unit tests with a fake venue; never run against the venue |
 
 **Intentionally minimal (extend before live use):** funding rate / OI /
 long-short ratio and the news-blackout calendar are placeholders; order-book
@@ -1254,7 +1270,7 @@ unit-tested but hasn't had real testnet connection hours on it yet.
 
 ## The desk (`maya/agents/`)
 
-Five pipeline agents and four analysts. The analysts do not run in sequence —
+Six pipeline agents and four analysts. The analysts do not run in sequence —
 they all read the same bar and each files a `Finding` (verdict, confidence,
 evidence), which Maya combines into a `Conference`.
 
