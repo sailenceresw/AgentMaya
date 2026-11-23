@@ -12,6 +12,7 @@ import time
 from loguru import logger
 
 from maya.config import RunMode, Settings, get_settings
+from maya.tracing import log_startup, trace
 from maya.data.ingestion import build_feed
 from maya.graph import build_graph
 from maya.journal.store import TradeJournal
@@ -169,6 +170,7 @@ def main() -> None:
     settings = get_settings()
     _configure_logging(settings)
     _guard_live(settings)
+    log_startup(settings)
 
     logger.info("=== Maya Trading System === mode={} symbol={} tf={}",
                 settings.mode.value, settings.symbol, settings.timeframe)
@@ -198,7 +200,10 @@ def main() -> None:
             last_candle = candle
             if watchdog is not None:
                 watchdog.beat()
-            graph.invoke({"candle": candle})
+            with trace(settings, "graph"):
+                graph.invoke({"candle": candle},
+                             config={"run_name": "maya_candle",
+                                     "metadata": {"candle_index": processed}})
             processed += 1
             if nodes.risk.account.state.value == "halted":
                 logger.critical("System HALTED ({}). Stopping new candles.",
