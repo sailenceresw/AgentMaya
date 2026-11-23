@@ -207,6 +207,90 @@ def test_halt_requires_the_token(live_api):
     assert nodes.risk.account.state.value == "running"
 
 
+def test_dashboard_escapes_every_string_it_shows():
+    """Regression (security): the dashboard built its page with innerHTML from
+    unescaped data. Coin names come from the venue's public list and halt
+    reasons from a request, so either could run script on a page that holds
+    the token. Every data string must pass through esc()."""
+    import re
+
+    from maya.api.server import DASHBOARD_HTML
+    assert "const esc = v =>" in DASHBOARD_HTML
+    # Sinks that cannot run script: textContent, canvas text, and the notes
+    # list, which is escaped as a whole where it is shown (esc(notes.join)).
+    safe_sink = ("textContent", "fillText", "label(", "notes.push(")
+    assert "esc(notes.join(" in DASHBOARD_HTML
+    lines = DASHBOARD_HTML.splitlines()
+    unsafe = []
+    for i, line in enumerate(lines):
+        context = line + (lines[i - 1] if i else "")          # a template may start a line up
+        if any(s in context for s in safe_sink):
+            continue
+        unsafe += [x for x in re.findall(r"\$\{([^}]*)\}", line)
+                   if re.search(r"\b(symbol|setup|setup_name|halt_reasons|direction|message|"
+                                r"timeframe|quantity|state|reason)\b", x) and "esc(" not in x
+                   and not x.startswith(("a.state === ", "halted"))]
+    assert unsafe == []
+
+
+def _small_server(**fns):
+    from maya.api.server import MonitorServer
+    s = Settings(api_enabled=True, api_token=TOKEN, api_host="127.0.0.1", api_port=0)
+    server = MonitorServer(s, fns.get("snap", lambda: {"ok": 1}), lambda n: [],
+                           fns.get("halt", lambda r: None), chart_fn=fns.get("chart"))
+    server.start()
+    return server
+
+
+def test_halt_body_and_reason_are_bounded():
+    """Regression (security): POST /api/halt read a body of any size and
+    stored a reason of any length."""
+    reasons = []
+    server = _small_server(halt=reasons.append)
+    try:
+        big = {"reason": "x" * 5000}
+        assert _call(server, "/api/halt", method="POST", body=big)[0] == 413
+        assert reasons == []
+        assert _call(server, "/api/halt", method="POST", body={"reason": "y" * 1000})[0] == 200
+        assert reasons == ["y" * 200]
+    finally:
+        server.stop()
+
+
+def test_the_token_never_reaches_the_request_log():
+    """Regression (security): request lines were logged with ?token=... in them."""
+    from loguru import logger
+    lines = []
+    sink = logger.add(lines.append, level="DEBUG")
+    server = _small_server()
+    try:
+        url = f"http://127.0.0.1:{server.port}/api/health?token={TOKEN}"
+        urllib.request.urlopen(url, timeout=5).read()
+    finally:
+        server.stop()
+        logger.remove(sink)
+    api_lines = [str(m) for m in lines if "api " in str(m)]
+    assert api_lines and not any(TOKEN in m for m in api_lines)
+    assert any("<token>" in m for m in api_lines)
+
+
+def test_chart_endpoint_passes_a_coin_through():
+    """The scanner dashboard can ask for any coin's chart (it holds no candles)."""
+    seen = []
+
+    def chart(tf, bars, coin=None):
+        seen.append((tf, bars, coin))
+        return {"symbol": "ETHUSDT", "candles": []}
+
+    server = _small_server(chart=chart)
+    try:
+        assert _call(server, "/api/chart?tf=15m&coin=ETH&bars=50")[0] == 200
+        assert _call(server, "/api/chart")[0] == 200
+    finally:
+        server.stop()
+    assert seen == [("15m", 50, "ETH"), ("base", 150, None)]
+
+
 def test_there_is_no_endpoint_that_resumes_or_opens_a_trade(live_api):
     """The API must only ever move the system toward safety. A stolen token
     should be able to stop the agent, never to make it trade."""

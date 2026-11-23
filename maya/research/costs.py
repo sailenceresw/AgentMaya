@@ -27,10 +27,17 @@ class Sample:
 
     ``gross_return`` is a fraction (0.001 = 10 bps) already signed in the
     direction the hypothesis traded, so a short that worked is positive.
+
+    ``symbol``, ``direction`` (+1 long, -1 short) and ``hold_ms`` let the
+    harness take out what simply holding the coin earned over the same time
+    (the buy-and-hold gate). A sample without them cannot pass that gate.
     """
 
     timestamp: int
     gross_return: float
+    symbol: str = ""
+    direction: int = 0
+    hold_ms: int = 0
 
 
 class SampleList(list):

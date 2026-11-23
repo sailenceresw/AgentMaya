@@ -5,6 +5,7 @@
     python -m maya.research holdout <hypothesis_id>
     python -m maya.research registry
     python -m maya.research failures
+    python -m maya.research diagnose <hypothesis_id>   (research window only, no registry row)
 
 Data is Binance USD-M public klines, cached under ``data/`` (see
 ``maya.data.download``). The last 120 days of the range are the holdout.
@@ -27,6 +28,22 @@ from maya.research.registry import HoldoutAlreadyUsed, HypothesisRegistry, make_
 from maya.research.stats import corrected_threshold
 
 
+DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
+DEFAULT_START = "2024-08-10"
+DEFAULT_END = "2026-08-09"
+
+
+def _window(a, hyp) -> tuple[str, str]:
+    start = a.start or (hyp.start if hyp is not None else "") or DEFAULT_START
+    end = a.end or (hyp.end if hyp is not None else "") or DEFAULT_END
+    return start, end
+
+
+def _symbols(arg: str | None, hyp) -> list[str]:
+    raw = arg or (hyp.symbols if hyp is not None else "") or DEFAULT_SYMBOLS
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def _ms(day: str) -> int:
     return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -45,14 +62,20 @@ def load_data(symbols: list[str], timeframe: str, start: str, end: str,
 
 def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
     p = argparse.ArgumentParser(prog="python -m maya.research", description=__doc__.split("\n")[0])
-    p.add_argument("command", choices=["list", "run", "holdout", "registry", "failures"])
+    p.add_argument("command", choices=["list", "run", "holdout", "registry", "failures",
+                                       "diagnose"])
     p.add_argument("hypothesis_id", nargs="?")
-    p.add_argument("--symbols", default="BTCUSDT,ETHUSDT,SOLUSDT")
+    p.add_argument("--symbols", default=None,
+                   help="defaults to the hypothesis's declared coins, else " + DEFAULT_SYMBOLS)
     p.add_argument("--timeframe", default=None,
                    help="bar size; defaults to the one the hypothesis declares")
-    p.add_argument("--start", default="2024-08-10")
-    p.add_argument("--end", default="2026-08-09")
+    p.add_argument("--start", default=None,
+                   help="defaults to the hypothesis's declared window, else " + DEFAULT_START)
+    p.add_argument("--end", default=None,
+                   help="defaults to the hypothesis's declared window, else " + DEFAULT_END)
     p.add_argument("--db", default="maya_journal.db")
+    p.add_argument("--merge", action="store_true",
+                   help="diagnose: combine per-coin runs (--symbols A then B ...) into one report")
     p.add_argument("--rerun", action="store_true",
                    help="test an id that already has a research row (adds another row)")
     a = p.parse_args(argv)
@@ -61,6 +84,35 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
         for h in CATALOG.values():
             flag = "  [blocked: " + h.blocked + "]" if h.blocked else ""
             print(f"{h.id:<28}{h.cost:<7}{h.timeframe:<5}{h.description}{flag}")
+        return 0
+
+    if a.command == "diagnose":
+        # Exploration, not a test: research window only, and the registry is
+        # never opened, so looking cannot write a row or raise the threshold.
+        from maya.research.diagnose import diagnose
+        from maya.research.hypotheses import PIPELINE_CONFIGS
+        if a.hypothesis_id not in PIPELINE_CONFIGS:
+            print(f"diagnose supports the pipeline hypotheses: "
+                  f"{', '.join(sorted(PIPELINE_CONFIGS))}", file=sys.stderr)
+            return 2
+        hyp = CATALOG[a.hypothesis_id]
+        if hyp.blocked:
+            print(f"blocked: {hyp.id} cannot run yet: {hyp.blocked}", file=sys.stderr)
+            return 4
+        symbols = _symbols(a.symbols, hyp)
+        if a.merge:
+            from maya.research.diagnose import merge
+            try:
+                print(merge(hyp.id, symbols))
+            except FileNotFoundError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            return 0
+        data = load_data(symbols, a.timeframe or hyp.timeframe, *_window(a, hyp), loader=loader)
+        # The holdout cutoff is the newest loaded candle minus 120 days. Coins
+        # cached over the same --start/--end share that cutoff, so diagnosing
+        # one coin at a time sees the same research window as all together.
+        print(diagnose(hyp.id, data.research))
         return 0
 
     registry = HypothesisRegistry(a.db)
@@ -106,8 +158,8 @@ def main(argv: list[str] | None = None, loader=fetch_historical_klines) -> int:
             print("past failures, so this is not one of them under a new name:")
             for r in failed:
                 print("  " + (r.lesson or make_lesson(r.id, r.reason, r.kind)))
-    data = load_data([s.strip() for s in a.symbols.split(",") if s.strip()],
-                     a.timeframe or hyp.timeframe, a.start, a.end, loader=loader)
+    data = load_data(_symbols(a.symbols, hyp), a.timeframe or hyp.timeframe,
+                     *_window(a, hyp), loader=loader)
     try:
         rep = (run_research if a.command == "run" else run_holdout)(hyp, data, registry)
     except (HoldoutAlreadyUsed, PermissionError) as exc:

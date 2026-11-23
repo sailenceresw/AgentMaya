@@ -126,6 +126,10 @@ class ExecutionEngine:
         # thread (manage/open) and the background PositionMonitor thread
         # (testnet/live), which can both observe/close a position.
         self.lock = threading.RLock()
+        # The hard hold limit. Only run_backtest(max_hold_hours=...) changes it,
+        # for a pre-declared research test; there is no setting or env var for
+        # it, so a live or testnet runner always uses the RiskLimits value.
+        self.max_hold_hours: float = RiskLimits.MAX_POSITION_DURATION_HOURS
 
     @property
     def has_position(self) -> bool:
@@ -182,9 +186,20 @@ class ExecutionEngine:
             )
             return True
 
-    def _close(self, exit_price: float, ts: int, reason: str) -> TradeResult:
+    def _close(self, exit_price: float, ts: int, reason: str) -> TradeResult | None:
+        """Close the position. None if the venue refused: the position is
+        kept, nothing is journaled, and the next candle tries again.
+
+        Regression (testnet, 20 Nov 2026): a refused close was journaled as
+        a closed win, the engine went flat, and the next entry stacked onto
+        the stuck position.
+        """
         pos = self.position
         assert pos is not None
+        if self.broker.close_position(pos, exit_price, reason) is False:
+            logger.critical("{} {} close ({}) refused by the venue; position kept open, "
+                            "retrying next candle", pos.symbol, pos.direction, reason)
+            return None
         gross = pos.pnl_at(exit_price)
         fees = self.fees.cost_usd(pos.notional, self.order_type, reason)
         pnl = gross - fees
@@ -194,7 +209,6 @@ class ExecutionEngine:
         risk = pos.initial_risk_usd
         rr = (gross / risk) if risk else 0.0
         result = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
-        self.broker.close_position(pos, exit_price, reason)
         self.position = None
         return TradeResult(pos, exit_price, pnl, fees, rr, result, ts, reason)
 
@@ -240,7 +254,7 @@ class ExecutionEngine:
 
             # Max duration force-close (spec 7.1 / 8.3).
             dur_h = (candle.timestamp - pos.opened_ts) / 3_600_000
-            if dur_h >= RiskLimits.MAX_POSITION_DURATION_HOURS:
+            if dur_h >= self.max_hold_hours:
                 return self._close(candle.close, candle.timestamp, "max_duration")
             return None
 

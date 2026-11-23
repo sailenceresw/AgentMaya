@@ -49,10 +49,18 @@ def run_backtest(settings: Settings, candles: Iterator[Candle],
                   journal_path: str = ":memory:",
                   total: int | None = None,
                   progress_every: int = 5_000,
-                  funding=None) -> BacktestMetrics:
+                  funding=None,
+                  max_hold_hours: float | None = None) -> BacktestMetrics:
+    """``max_hold_hours`` replaces the hard hold limit for this backtest only.
+    It exists for pre-declared research tests; it is deliberately not a
+    setting, so nothing that trades can pick it up."""
     journal = TradeJournal(db_path=journal_path)
     nodes = TradingNodes(settings, journal, equity=settings.start_equity, now_ts=0,
                          funding=funding)
+    if max_hold_hours is not None:
+        if max_hold_hours <= 0:
+            raise ValueError("max_hold_hours must be positive")
+        nodes.execution.max_hold_hours = max_hold_hours
     graph = build_graph(nodes)
 
     daily_equity: dict[int, float] = {}

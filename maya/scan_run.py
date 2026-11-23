@@ -44,6 +44,7 @@ class ScanAgent:
         self.risk = risk
         self._last_managed_ts = 0
         self.last_scan: list[Candidate] = []   # read by the monitoring API
+        self.last_scan_ts = 0                  # when it ran (ms), for "last checked at"
         self.steps = 0
         self.got_data = False                  # did the last step read any candles?
 
@@ -59,7 +60,7 @@ class ScanAgent:
             return None
 
         results = self.scanner.scan(now_ts)
-        self.last_scan = results
+        self.last_scan, self.last_scan_ts = results, now_ts
         self.got_data = any(not c.rejected.startswith("no candles") for c in results)
         logger.info("scan:\n{}", format_table(results))
         best = self.scanner.review_best(results)
@@ -100,6 +101,16 @@ class ScanAgent:
                     result.pnl_usdt, result.fees_usdt, result.reason)
 
 
+def should_stop(risk: RiskManager, execution: ExecutionEngine) -> bool:
+    """Stop the loop only for a halt a person must clear, and only when flat.
+
+    A daily or weekly loss halt lifts at the next period; the loop has to be
+    running to see that period start.
+    """
+    return (risk.account.state is SystemState.HALTED and not execution.has_position
+            and not risk.halt_lifts_by_itself)
+
+
 def _sleep_to_next_close(tf_ms: int, grace_s: float = 3.0) -> None:
     """Sleep until just after the current candle closes."""
     now_ms = int(time.time() * 1000)
@@ -113,7 +124,9 @@ def main() -> None:
         _guard_live,
         _report_scan,
         _start_api,
+        _start_telegram,
         _startup_reconciliation,
+        _stop_telegram,
     )
 
     settings = get_settings()
@@ -140,6 +153,7 @@ def main() -> None:
     # The same dashboard/API as the single-symbol agent (off unless
     # MAYA_API_ENABLED), plus the latest scan in its snapshot.
     api = _start_api(settings, agent, journal, lambda: agent.steps)
+    telegram = _start_telegram(settings, agent, journal, lambda: agent.steps)
 
     logger.info("=== Maya scanner === mode={} tf={} up to {} coins",
                 settings.mode.value, settings.timeframe, settings.scan_max_coins)
@@ -156,7 +170,7 @@ def main() -> None:
             agent.step(int(time.time() * 1000))
             if agent.got_data:
                 watchdog.beat()
-            if risk.account.state is SystemState.HALTED and not execution.has_position:
+            if should_stop(risk, execution):
                 logger.critical("System HALTED ({}). Stopping.",
                                 ", ".join(risk.account.halt_reasons))
                 break
@@ -184,6 +198,7 @@ def main() -> None:
                 logger.warning("no closing price for {} ({}); booking at entry", pos.symbol, exc)
             flatten_on_shutdown(execution, risk, journal, price, int(time.time() * 1000))
         _report_scan(risk, journal)
+        _stop_telegram(telegram, settings, agent, journal, agent.steps)
         journal.close()
 
 

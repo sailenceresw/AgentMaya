@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     hl_account_address: str = Field(default="", validation_alias="HL_ACCOUNT_ADDRESS")
     # Seconds to wait for a resting limit entry before cancelling it.
     hl_entry_timeout_s: float = 20.0
+    # Testnet only. The testnet book is its own thin market: BTC there was
+    # measured 4 to 136 bps under the real price over six hours (Nov 2026).
+    # Signals come from real-market candles, so unscaled their entry, stop and
+    # target sit on the wrong side of the testnet price. With this on, order
+    # prices are scaled by testnet mid / real mid at entry. Never applied on
+    # mainnet, whatever this says.
+    hl_testnet_price_map: bool = True
 
     # -- Kronos forecast input (unmeasured, so off) -------------------------- #
     # One extra reading on the SignalObject, computed when a bar of
@@ -326,6 +333,29 @@ class Settings(BaseSettings):
     # via the env_prefix above — no explicit alias, which would otherwise stop
     # the field being set by name in code and tests.
     api_token: str = ""
+
+    # -- Layer 7 Telegram bot ------------------------------------------------ #
+    # Off by default. It watches the agent (alerts on open/close/halt) and
+    # answers /status, /trades, /chart and /halt. Like the API, its only
+    # state-changing command moves the system to a safer state.
+    telegram_enabled: bool = False
+    # From @BotFather. A secret: anyone holding it can impersonate the bot.
+    # MAYA_TELEGRAM_BOT_TOKEN (no alias, so tests can set it by name).
+    telegram_bot_token: str = ""
+    # Comma-separated chat ids allowed to talk to the bot. Required: the bot
+    # refuses to start without it rather than answering anyone who finds it.
+    # Find yours with `python -m maya.check_telegram`.
+    telegram_chat_ids: str = ""
+    # How often the watcher compares the agent's state, seconds.
+    telegram_poll_s: float = 5.0
+    # Attach a chart (entry/SL/TP drawn) to the "position opened" alert.
+    telegram_chart_on_open: bool = True
+    # One message after 00:00 UTC with the previous day's trades and P&L.
+    telegram_daily_summary: bool = True
+
+    @property
+    def telegram_chat_id_list(self) -> list[int]:
+        return [int(x) for x in self.telegram_chat_ids.replace(" ", "").split(",") if x]
 
     # Credentials are read without the MAYA_ prefix.
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")

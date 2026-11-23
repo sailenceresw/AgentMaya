@@ -252,7 +252,8 @@ class TradeJournal:
         with self._lock:
             rows = self.conn.execute(
                 "SELECT setup_name, direction, pnl_usdt, result, exit_reason, "
-                "timestamp_exit FROM trades ORDER BY timestamp_exit DESC LIMIT ?",
+                "timestamp_exit, timestamp_entry, symbol, entry_price, exit_price, fees_usdt "
+                "FROM trades ORDER BY timestamp_exit DESC LIMIT ?",
                 (max(1, min(int(limit), 100)),),
             ).fetchall()
         return [dict(r) for r in rows]

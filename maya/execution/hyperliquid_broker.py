@@ -69,10 +69,32 @@ def order_statuses(resp) -> list[dict]:
     return ((resp.get("response") or {}).get("data") or {}).get("statuses") or []
 
 
+def rejection(resp) -> str | None:
+    """The venue's reason when a signed action was refused, else None.
+
+    The SDK does not raise on a refusal; it returns it. Seen on testnet (Nov
+    2026) from ``market_close`` with an API wallet that was no longer
+    approved: ``{"status": "err", "response": "User or API Wallet 0x... does
+    not exist."}``. ``market_close`` returns None when there is nothing to close.
+    """
+    if not isinstance(resp, dict):
+        return None
+    if resp.get("status") != "ok":
+        return str(resp.get("response") or resp)
+    for st in order_statuses(resp):
+        if "error" in st:
+            return str(st["error"])
+    return None
+
+
 @dataclass
 class Clients:
     exchange: object
     info: object
+    # Read-only info client for the real (mainnet) market. Set only on testnet
+    # with ``hl_testnet_price_map`` on; its presence is what turns the price
+    # map on, so a broker built without it sends prices unchanged.
+    reference: object | None = None
 
 
 def connect(settings: Settings) -> Clients:
@@ -87,9 +109,12 @@ def connect(settings: Settings) -> Clients:
     wallet = Account.from_key(settings.hl_api_wallet_key)
     logger.info("Hyperliquid SDK: {} for account {}", "MAINNET" if url == MAINNET_URL
                 else "testnet", settings.hl_account_address)
+    reference = None
+    if url == TESTNET_URL and settings.hl_testnet_price_map:
+        reference = Info(MAINNET_URL, skip_ws=True)      # public reads only, no key
     return Clients(
         exchange=Exchange(wallet, url, account_address=settings.hl_account_address),
-        info=Info(url, skip_ws=True))
+        info=Info(url, skip_ws=True), reference=reference)
 
 
 class HyperliquidSDKBroker:
@@ -98,6 +123,9 @@ class HyperliquidSDKBroker:
         self.settings = settings
         clients = clients or connect(settings)
         self.exchange, self.info = clients.exchange, clients.info
+        self._reference = clients.reference
+        # Venue price / signal price for the open trade. 1.0 off testnet.
+        self._ratio = 1.0
         self.address = settings.hl_account_address
         self.coin = to_hl_symbol(settings.symbol)
         self._sleep, self._clock = sleep, clock
@@ -105,6 +133,8 @@ class HyperliquidSDKBroker:
         self.last_fill: Fill | None = None
         self._stop_oid: int | None = None
         self._tp_oid: int | None = None
+        self.unclosed: dict[str, str] = {}
+        self.leftover_orders: list[int] = []   # orders still open after the last close
 
     # -- venue reads -------------------------------------------------------- #
     def _sz_decimals(self, coin: str) -> int:
@@ -112,6 +142,24 @@ class HyperliquidSDKBroker:
             if asset.get("name") == coin:
                 return int(asset["szDecimals"])
         raise RuntimeError(f"{coin} is not a Hyperliquid perp market")
+
+    def _use(self, symbol: str) -> bool:
+        """Point the broker at ``symbol``'s coin. False if the venue lists none.
+
+        Regression: the coin was fixed from MAYA_SYMBOL at start, so under the
+        multi-coin scanner an ETH signal would have been sent as a BTC order
+        at ETH's prices. Every order now follows the trade's own symbol.
+        """
+        coin = to_hl_symbol(symbol)
+        if coin == self.coin:
+            return True
+        try:
+            decimals = self._sz_decimals(coin)
+        except Exception as exc:  # noqa: BLE001 - not listed here (testnet lists fewer)
+            logger.error("[HL] {} cannot be traded on this venue: {}", coin, exc)
+            return False
+        self.coin, self.sz_decimals = coin, decimals
+        return True
 
     def position_size(self, coin: str | None = None) -> float:
         """Signed size at the venue: positive long, negative short, 0 flat."""
@@ -121,6 +169,59 @@ class HyperliquidSDKBroker:
             if pos.get("coin") == coin:
                 return float(pos.get("szi", 0) or 0)
         return 0.0
+
+    def _price_ratio(self) -> float | None:
+        """Testnet mid over real mid, or 1.0 when prices are not mapped.
+
+        None means the two prices could not be compared, and the caller must
+        not trade: unmapped prices on testnet put the stop on the wrong side
+        of the market. The reference is Hyperliquid mainnet, which sat 1 bp
+        from the Binance price the signals are built on when this was checked.
+        """
+        if self._reference is None:
+            return 1.0
+        try:
+            venue = float(self.info.all_mids()[self.coin])
+            real = float(self._reference.all_mids()[self.coin])
+            ratio = venue / real
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[HL] testnet price map unavailable, entry skipped: {}", exc)
+            return None
+        if not 0.8 <= ratio <= 1.25:
+            logger.error("[HL] testnet {} at {} is too far from the real {} to map; "
+                         "entry skipped", self.coin, venue, real)
+            return None
+        logger.info("[HL] testnet {} mid {} vs real {} ({:+.0f} bps): order prices scaled "
+                    "by {:.5f}", self.coin, venue, real, (ratio - 1) * 10_000, ratio)
+        return ratio
+
+    def _thin_book(self, size: float, mid: float) -> str | None:
+        """Why the book cannot take ``size`` both ways within the slippage
+        cap, or None if it can.
+
+        Both sides, because a position that cannot be closed is worse than
+        one never opened. Regression (testnet, 20 Nov 2026): HYPE's testnet
+        book was nearly empty; two shorts filled 15% away from the mid, every
+        close was refused, and the position was later liquidated.
+        """
+        try:
+            levels = self.info.l2_snapshot(self.coin)["levels"]
+        except Exception as exc:  # noqa: BLE001
+            return f"order book unavailable: {exc}"
+        slip = self.settings.perps_max_slippage_bps / 10_000
+        bids = sum(float(lv["sz"]) for lv in levels[0] if float(lv["px"]) >= mid * (1 - slip))
+        asks = sum(float(lv["sz"]) for lv in levels[1] if float(lv["px"]) <= mid * (1 + slip))
+        if min(bids, asks) < size:
+            return (f"book too thin within {self.settings.perps_max_slippage_bps:.0f} bps of "
+                    f"mid: {bids:g} bid / {asks:g} ask for size {size:g}")
+        return None
+
+    def _fill_keys(self) -> set[tuple]:
+        try:
+            return {(f.get("oid"), f.get("px"), f.get("sz"), f.get("time"))
+                    for f in self.info.user_fills(self.address)}
+        except Exception:  # noqa: BLE001 - only used to tell new fills from old
+            return set()
 
     def _open_orders(self, coin: str | None = None) -> list[dict]:
         coin = coin or self.coin
@@ -134,12 +235,14 @@ class HyperliquidSDKBroker:
                 return True
         return False
 
-    def _log_fill(self, what: str, oid: int | None, assumed_px: float, started: float) -> None:
+    def _log_fill(self, what: str, oid: int | set | None, assumed_px: float, started: float,
+                  fills: list[dict] | None = None) -> None:
         """Fill price, fee and latency, next to the price the paper broker
         would have booked. This comparison is the point of the testnet run."""
         latency_ms = (self._clock() - started) * 1000
-        fills = [f for f in self.info.user_fills(self.address)
-                 if oid is not None and f.get("oid") == oid]
+        oids = oid if isinstance(oid, set) else {oid} - {None}
+        if fills is None:
+            fills = [f for f in self.info.user_fills(self.address) if f.get("oid") in oids]
         if not fills:
             logger.info("[HL] {} oid={} latency={:.0f}ms (no fill record yet)",
                         what, oid, latency_ms)
@@ -171,16 +274,42 @@ class HyperliquidSDKBroker:
         if oid is None:
             return
         try:
-            self.exchange.cancel(self.coin, oid)
+            # Like orders, a refused cancel comes back in the response.
+            reason = rejection(self.exchange.cancel(self.coin, oid))
         except Exception as exc:  # noqa: BLE001 - a failed cancel must not mask the caller's work
-            logger.warning("[HL] cancel of oid {} failed: {}", oid, exc)
+            reason = str(exc)
+        if reason:
+            logger.warning("[HL] cancel of oid {} failed: {}", oid, reason)
 
     def open_position(self, intent: TradeIntent, qty: float, leverage: int) -> bool:
         self.last_fill = None
         self._stop_oid = self._tp_oid = None
+        if not self._use(intent.symbol):
+            return False
         is_buy = intent.direction == "long"
         size = round_size(qty, self.sz_decimals)
-        px = round_price(intent.entry_price, self.sz_decimals)
+        held = self.position_size()
+        if held != 0:
+            # Regression (testnet, 20 Nov 2026): the engine believed HYPE was
+            # flat after a refused close, opened another short, and the venue
+            # added it to the stuck one.
+            logger.critical("[HL] venue already holds {} {}; no new entry until it is "
+                            "closed", held, self.coin)
+            return False
+        ratio = self._price_ratio()
+        if ratio is None:
+            return False
+        try:
+            mid_now = float(self.info.all_mids()[self.coin])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[HL] no mid for {}, entry skipped: {}", self.coin, exc)
+            return False
+        thin = self._thin_book(size, mid_now)
+        if thin:
+            logger.error("[HL] {} entry skipped: {}", self.coin, thin)
+            return False
+        self._ratio = ratio
+        px = round_price(intent.entry_price * ratio, self.sz_decimals)
         if size <= 0 or size * px < HYPERLIQUID_MIN_NOTIONAL_USD:
             logger.warning("[HL] order ${:.2f} is under the ${:.0f} minimum; not sent",
                            size * px, HYPERLIQUID_MIN_NOTIONAL_USD)
@@ -189,7 +318,16 @@ class HyperliquidSDKBroker:
         started = self._clock()
         try:
             self.exchange.update_leverage(leverage, self.coin, is_cross=False)   # isolated
-            resp = self.exchange.order(self.coin, is_buy, size, px, {"limit": {"tif": "Gtc"}})
+            if self.settings.perps_order_type == "market":
+                # Hyperliquid has no market order type: a market order is an
+                # IOC limit priced through the book. What does not fill at
+                # once is cancelled by the venue, never left resting.
+                slip = self.settings.perps_max_slippage_bps / 10_000
+                mid = float(self.info.all_mids()[self.coin])
+                cap = round_price(mid * (1 + slip if is_buy else 1 - slip), self.sz_decimals)
+                resp = self.exchange.order(self.coin, is_buy, size, cap, {"limit": {"tif": "Ioc"}})
+            else:
+                resp = self.exchange.order(self.coin, is_buy, size, px, {"limit": {"tif": "Gtc"}})
         except Exception as exc:  # noqa: BLE001
             logger.error("[HL] entry failed before it was accepted: {}", exc)
             return False
@@ -216,19 +354,21 @@ class HyperliquidSDKBroker:
             logger.info("[HL] entry at {} did not fill within {:.0f}s; cancelled",
                         px, self.settings.hl_entry_timeout_s)
             return False
-        self._log_fill("entry", oid, intent.entry_price, started)
+        self._log_fill("entry", oid, px, started)
 
         # The position exists and has no stop yet. Stop first, then target.
-        self._stop_oid = self._trigger(not is_buy, filled, intent.stop_loss, "sl")
+        self._stop_oid = self._trigger(not is_buy, filled, intent.stop_loss * ratio, "sl")
         if self._stop_oid is None:
             logger.critical("[HL] STOP COULD NOT BE PLACED; closing the position now")
             self._flatten()
             return False
-        self._tp_oid = self._trigger(not is_buy, filled, intent.take_profit_1, "tp")
+        self._tp_oid = self._trigger(not is_buy, filled, intent.take_profit_1 * ratio, "tp")
         if self._tp_oid is None:
             logger.warning("[HL] target order not placed; the stop is in place and the "
                            "candle loop will take the target")
-        self.last_fill = Fill(price=self._entry_price(intent.entry_price), size=filled)
+        # Reported in the signal's price space, so the engine's entry, stop
+        # and target all stay on one scale.
+        self.last_fill = Fill(price=self._entry_price(px) / ratio, size=filled)
         return True
 
     def _entry_price(self, fallback: float) -> float:
@@ -240,38 +380,75 @@ class HyperliquidSDKBroker:
 
     def _flatten(self) -> bool:
         """Market-close whatever is open in this coin. True if it ends flat."""
+        reason = None
         try:
-            self.exchange.market_close(self.coin)
+            reason = rejection(self.exchange.market_close(self.coin))
         except Exception as exc:  # noqa: BLE001
-            logger.critical("[HL] market close failed: {}", exc)
+            reason = str(exc)
         flat = abs(self.position_size()) == 0
         if not flat:
-            logger.critical("[HL] POSITION STILL OPEN IN {} AFTER A CLOSE ATTEMPT. "
-                            "Close it by hand.", self.coin)
+            logger.critical("[HL] POSITION STILL OPEN IN {} AFTER A CLOSE ATTEMPT ({}). "
+                            "Close it by hand.", self.coin, reason or "no reason given")
         return flat
 
-    def close_position(self, pos: Position, price: float, reason: str) -> None:
+    def close_position(self, pos: Position, price: float, reason: str) -> bool:
+        """Close at the venue. False if the venue still shows the position.
+
+        On False the stop and target stay where they are and the caller
+        must keep treating the position as open. Regression (testnet, 20 Nov
+        2026): a refused close was followed by cancelling both orders and
+        journaling the trade as closed; the unprotected HYPE short was then
+        liquidated a day later.
+        """
+        self._use(pos.symbol)          # a no-op for the coin it opened; listed, since it did
         started = self._clock()
+        seen = self._fill_keys()
         if abs(self.position_size()) > 0:
             # The engine decided to close (time limit, shutdown) or its candle
             # check ran ahead of the venue's trigger. Close what is there.
-            self._flatten()
+            if not self._flatten():
+                logger.critical("[HL] {} close refused; its stop and target are LEFT IN "
+                                "PLACE and the position stays open", self.coin)
+                return False
         for oid in (self._stop_oid, self._tp_oid):
             self._cancel(oid)
         for o in self._open_orders():          # anything else left for this coin
             self._cancel(int(o["oid"]))
-        fills = self.info.user_fills(self.address)
-        last = next((f for f in reversed(fills) if f.get("coin") == self.coin), None)
-        self._log_fill(f"exit ({reason})", last.get("oid") if last else None, price, started)
+        # A reduce-only stop or target left behind can fire against the NEXT
+        # position in this coin and close it unasked, so leftovers are checked
+        # and reported, not assumed gone. A restart also refuses to start with
+        # them open (startup reconciliation).
+        try:
+            self.leftover_orders = [int(o["oid"]) for o in self._open_orders()]
+        except Exception as exc:  # noqa: BLE001 - the check itself must not break the close
+            logger.warning("[HL] could not re-check open orders after the close: {}", exc)
+            self.leftover_orders = []
+        if self.leftover_orders:
+            logger.critical("[HL] {} order(s) still open on {} after the close: {}. Cancel "
+                            "them by hand; they could close a later position.",
+                            len(self.leftover_orders), self.coin, self.leftover_orders)
+        # This trade's exit fills only: its own stop or target, or fills that
+        # appeared during this close. Regression: the newest fill for the coin
+        # was taken, which after a refused close was the ENTRY fill, and on
+        # PUMP an older trade's exit (77489 @ 0.0026, logged three times).
+        own = {self._stop_oid, self._tp_oid} - {None}
+        exits = [f for f in self.info.user_fills(self.address)
+                 if f.get("coin") == self.coin
+                 and (f.get("oid") in own
+                      or (f.get("oid"), f.get("px"), f.get("sz"), f.get("time")) not in seen)]
+        self._log_fill(f"exit ({reason})", None, price * self._ratio, started, fills=exits)
         self._stop_oid = self._tp_oid = None
+        return True
 
     def update_stop(self, pos: Position, new_stop: float) -> bool:
         """Replace the stop. The new one is placed before the old one is
         cancelled, so the position is covered throughout."""
+        if not self._use(pos.symbol):
+            return False
         size = abs(self.position_size())
         if size <= 0:
             return False
-        new_oid = self._trigger(pos.direction != "long", size, new_stop, "sl")
+        new_oid = self._trigger(pos.direction != "long", size, new_stop * self._ratio, "sl")
         if new_oid is None:
             return False            # the old stop is still in place
         self._cancel(self._stop_oid)
@@ -285,8 +462,14 @@ class HyperliquidSDKBroker:
         Covers a crash between an entry fill and its stop. Returns the coins
         it closed. A position that does have a stop is left alone; the normal
         startup mismatch check decides what to do about it.
+
+        A coin counts as closed only when the venue then shows it flat.
+        Regression: a refused close (the SDK returns the refusal, it does not
+        raise) was reported as closed. Coins still open are in ``unclosed``
+        with the venue's reason.
         """
         closed: list[str] = []
+        self.unclosed: dict[str, str] = {}
         for ap in self.info.user_state(self.address).get("assetPositions", []):
             pos = ap.get("position", {})
             coin, size = pos.get("coin"), float(pos.get("szi", 0) or 0)
@@ -295,8 +478,12 @@ class HyperliquidSDKBroker:
             logger.critical("[HL] {} position of {} has NO STOP at the venue; closing it",
                             coin, size)
             try:
-                self.exchange.market_close(coin)
-                closed.append(coin)
+                reason = rejection(self.exchange.market_close(coin))
             except Exception as exc:  # noqa: BLE001
-                logger.critical("[HL] could not close unprotected {}: {}", coin, exc)
+                reason = str(exc)
+            if reason is None and self.position_size(coin) == 0:
+                closed.append(coin)
+                continue
+            self.unclosed[coin] = reason or "still open after the close"
+            logger.critical("[HL] could not close unprotected {}: {}", coin, self.unclosed[coin])
         return closed

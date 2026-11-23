@@ -1,0 +1,71 @@
+{
+  "test_period": "2018-01-01 -> 2023-07-02",
+  "test_days": 2009,
+  "fee_per_side": 0.0025,
+  "up_day_base_rate": 0.5147,
+  "models": {
+    "gbm": {
+      "accuracy": 0.5207,
+      "naive_accuracy": 0.5147,
+      "p_value_vs_naive": 0.3039,
+      "auc": 0.5267,
+      "days_in_market_%": 72.8,
+      "position_changes": 608,
+      "total_return_%": -17.9,
+      "cagr_%": -3.5,
+      "sharpe": -0.06,
+      "max_drawdown_%": -78.7,
+      "bh_return_by_year_%": {
+        "2018": -71.9,
+        "2019": 87.3,
+        "2020": 308.0,
+        "2021": 62.3,
+        "2022": -65.1,
+        "2023": 84.4
+      },
+      "model_return_by_year_%": {
+        "2018": -60.3,
+        "2019": 15.6,
+        "2020": 274.7,
+        "2021": 27.6,
+        "2022": -68.4,
+        "2023": 18.1
+      }
+    },
+    "logit": {
+      "accuracy": 0.5157,
+      "naive_accuracy": 0.5147,
+      "p_value_vs_naive": 0.4734,
+      "auc": 0.5216,
+      "days_in_market_%": 78.1,
+      "position_changes": 495,
+      "total_return_%": 7.7,
+      "cagr_%": 1.4,
+      "sharpe": 0.02,
+      "max_drawdown_%": -78.9,
+      "bh_return_by_year_%": {
+        "2018": -71.9,
+        "2019": 87.3,
+        "2020": 308.0,
+        "2021": 62.3,
+        "2022": -65.1,
+        "2023": 84.4
+      },
+      "model_return_by_year_%": {
+        "2018": -74.9,
+        "2019": 79.9,
+        "2020": 307.7,
+        "2021": 62.2,
+        "2022": -71.5,
+        "2023": 26.7
+      }
+    }
+  },
+  "buy_and_hold": {
+    "total_return_%": 124.4,
+    "cagr_%": 15.8,
+    "sharpe": 0.2,
+    "max_drawdown_%": -81.5
+  },
+  "leak_check_shuffled_auc_gbm": 0.516
+}
