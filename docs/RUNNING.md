@@ -444,9 +444,27 @@ venue hours. Testnet first.
 | `MAYA_MAX_FEE_SHARE` | `0.20` | Maximum share of the target move fees may take |
 | `MAYA_PULSE_ENABLED` | `false` | Pass MetaMask Pulse market summaries to the LLM veto |
 | `MAYA_PULSE_TTL_S` | `900` | Pulse cache lifetime, failures included |
+| `MAYA_LANGSMITH_TRACING` | `false` | Trace the LangGraph pipeline to LangSmith for observability |
+| `MAYA_LANGSMITH_PROJECT` | `maya-trading` | LangSmith project traces are grouped under |
+| `LANGSMITH_API_KEY` | *(blank)* | LangSmith key (standard LangChain var); required when tracing is on |
+| `LANGSMITH_ENDPOINT` | *(blank)* | Override the LangSmith endpoint (self-hosted / EU) |
 
 `MAYA_MODE=testnet` maps to Hyperliquid testnet, `live` to mainnet. Live still
 requires `MAYA_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`.
+
+### LangSmith tracing (observability)
+
+Set `MAYA_LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY=...` to stream every
+per-candle run of the LangGraph pipeline — `manage → signal → strategy → risk →
+execution`, plus any LLM veto call — to [LangSmith](https://smith.langchain.com),
+grouped under `MAYA_LANGSMITH_PROJECT`. It is wired at startup in both the live
+agent (`python -m maya`) and the backtester (`python -m maya.backtest.runner`),
+so the same runs you trade are the ones you can inspect.
+
+Tracing is **off by default** (it sends run data off-box) and **best-effort**:
+if LangSmith is unreachable the agent keeps trading and simply sends no traces,
+though an unreachable endpoint can add a flush delay at process exit. Keep the
+key in `.env` (gitignored) or the container environment — never in a commit.
 
 ## Risk rules and small accounts
 

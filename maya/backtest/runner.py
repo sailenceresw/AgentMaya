@@ -123,6 +123,8 @@ def main() -> None:
                format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | {message}")
 
     settings = get_settings()
+    from maya.observability import configure as configure_tracing
+    configure_tracing(settings)
     start = os.environ.get("MAYA_BACKTEST_START", "2025-01-01")
     end = os.environ.get("MAYA_BACKTEST_END", "2025-12-31")
     cache = os.environ.get(

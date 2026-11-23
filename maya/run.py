@@ -168,6 +168,10 @@ def _start_api(settings: Settings, nodes: TradingNodes, journal: TradeJournal,
 def main() -> None:
     settings = get_settings()
     _configure_logging(settings)
+    # Enable LangSmith tracing (if configured) before the graph is built, so the
+    # LangGraph pipeline is traced from the first candle.
+    from maya.observability import configure as configure_tracing
+    configure_tracing(settings)
     _guard_live(settings)
 
     logger.info("=== Maya Trading System === mode={} symbol={} tf={}",

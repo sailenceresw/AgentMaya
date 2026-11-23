@@ -310,6 +310,14 @@ class Settings(BaseSettings):
     # A veto is a short yes/no judgement; low effort keeps it fast and cheap.
     llm_effort: str = "low"
 
+    # -- Observability: LangSmith tracing (optional) ------------------------ #
+    # When on, the LangGraph pipeline (and any LLM veto calls) are traced to
+    # LangSmith so every per-candle decision is inspectable. Off by default —
+    # enabling it sends run data to an external service, so it is a deliberate
+    # choice, and nothing touches the network until it is turned on.
+    langsmith_tracing: bool = False
+    langsmith_project: str = "maya-trading"
+
     log_level: str = "INFO"
 
     # -- Layer 7 monitoring API / dashboard --------------------------------- #
@@ -331,6 +339,10 @@ class Settings(BaseSettings):
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", validation_alias="BINANCE_API_SECRET")
     anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    # LangSmith uses the standard LangChain variable names (no MAYA_ prefix) so
+    # an existing LANGSMITH_* environment is picked up unchanged.
+    langsmith_api_key: str = Field(default="", validation_alias="LANGSMITH_API_KEY")
+    langsmith_endpoint: str = Field(default="", validation_alias="LANGSMITH_ENDPOINT")
 
     @field_validator("leverage")
     @classmethod
