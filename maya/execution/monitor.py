@@ -46,23 +46,21 @@ class PositionMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._exchange = None
+        # SDK path: consecutive polls that read the venue flat for one position.
+        self._flat_reads = 0
+        self._flat_pos = None
 
     # -- lifecycle ----------------------------------------------------------- #
     def start(self) -> None:
         if not self.settings.uses_real_orders:
             return  # nothing to poll in sim/paper — the candle loop is authoritative
-        if self.settings.uses_hl_sdk:
-            # No poller for the SDK path yet. Stops and targets rest at the
-            # venue as trigger orders, and the candle loop reconciles through
-            # HyperliquidSDKBroker.close_position, which reads the real fill.
-            logger.info("Position monitor not used on the Hyperliquid SDK path; "
-                        "venue trigger orders hold the stop between candles.")
-            return
         if self.settings.uses_metamask and self.settings.perps_dry_run:
             # Rehearsal positions exist only locally; the venue is flat by
             # design, and polling it would "reconcile" every position shut.
             return
-        self._exchange = self._build_exchange()
+        if not self.settings.uses_hl_sdk:
+            # The SDK path reuses the engine's broker; nothing to build.
+            self._exchange = self._build_exchange()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="maya-position-monitor",
                                         daemon=True)
@@ -103,7 +101,42 @@ class PositionMonitor:
                 logger.warning("position monitor poll failed: {}", exc)
             self._stop.wait(self.poll_interval_s)
 
+    def _poll_sdk(self, now_ts: int):
+        """Hyperliquid SDK path: book a close the venue already made.
+
+        Everything runs under the engine's lock, because the broker is shared
+        with the candle thread and holds per-trade state (the coin, the stop
+        and target oids). The venue must read flat on two polls in a row for
+        the same position: a single empty read, if the venue ever returned
+        one, would otherwise cancel a live position's stop.
+        """
+        with self.execution.lock:
+            pos = self.execution.position
+            if pos is None:
+                self._flat_reads, self._flat_pos = 0, None
+                return None
+            size = self.execution.broker.venue_size(pos.symbol)
+            if size is None or size > 0:
+                self._flat_reads, self._flat_pos = 0, None
+                return None
+            if self._flat_pos is not pos:
+                self._flat_reads, self._flat_pos = 0, pos
+            self._flat_reads += 1
+            if self._flat_reads < 2:
+                return None
+            self._flat_reads, self._flat_pos = 0, None
+            logger.info("{} reads flat at the venue: its stop or target filled between "
+                        "candles", pos.symbol)
+            return self.execution.book_venue_close(now_ts)
+
     def _poll_once(self) -> None:
+        now_ts = int(time.time() * 1000)
+        if self.settings.uses_hl_sdk:
+            result = self._poll_sdk(now_ts)
+            if result is not None:
+                self._record(result, now_ts)
+            return
+
         local_pos = self.execution.position
         if local_pos is None:
             return  # nothing to reconcile; cheap early-out, no API call
@@ -120,13 +153,15 @@ class PositionMonitor:
         # SL or TP order filled. Find the real exit price/fee from the most
         # recent reduce-only fill rather than guessing.
         exit_price, fees, reason = self._last_fill(local_pos)
-        now_ts = int(time.time() * 1000)
         result = self.execution.reconcile_external_close(
             exit_price=exit_price, ts=now_ts, reason=reason, fees_usdt=fees,
         )
         if result is None:
             return
+        self._record(result, now_ts)
 
+    def _record(self, result, now_ts: int) -> None:
+        """Journal a venue-made close and tell the risk manager."""
         # Order matters, and so does the isolation. The risk update is what
         # drives consecutive_losses, the daily-loss halt and the kill switch;
         # journaling is bookkeeping. Previously a journal failure here

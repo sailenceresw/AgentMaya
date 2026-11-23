@@ -635,10 +635,23 @@ fills on the testnet book inside `MAYA_HL_ENTRY_TIMEOUT_S`.
 **What is logged.** Every fill logs price, size, fee and latency next to the
 price the paper broker would have assumed, with the difference in bps.
 
-Limits: there is no background position monitor on this path yet. Stops and
-targets rest at the venue as trigger orders, and the candle loop reconciles
-once a minute. The journal books an exit at the planned price; the real fill
-is in the log line. Market data still comes from Binance klines.
+**Exits are booked at the venue's fill.** On close the broker reads this
+trade's own exit fills (its stop, its target, or the market close it just
+sent) and the engine journals that price, the venue's entry and exit fees,
+and which trigger filled. If no fill is listed after a three-second wait,
+the planned price and the fee model are booked and a warning is logged;
+check the venue's fill history for those trades.
+
+**Position monitor.** Signals come from real-market candles, but the stop
+rests on the testnet book, so the venue's stop or target can fire with no
+candle touching it. The `PositionMonitor` polls the venue every 5 seconds;
+when it reads the position flat on two polls in a row it books the close
+at the fill, cancels what is left of the stop/target pair, and updates the
+risk manager at once. One failed or empty read never books anything. This
+was found by reading the code after the Nov 2026 run and is tested against
+the stand-in venue only; it has not yet run on testnet.
+
+Market data still comes from Binance klines.
 
 ## Kronos forecast input (optional, off by default)
 

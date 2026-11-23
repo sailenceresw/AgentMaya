@@ -22,10 +22,15 @@ Safety properties:
 - **A stop is replaced, never removed.** ``update_stop`` places the new stop
   before it cancels the old one.
 
+- **Exits are booked at the venue's fill.** ``close_position`` sets
+  ``last_exit`` from this trade's own fills, and the engine journals that
+  price and fee instead of the planned one.
+
 VERIFIED vs NOT: method names and signatures were checked against
-hyperliquid-python-sdk 0.24.0 as installed. Nothing here has been run against
-the Hyperliquid testnet; response shapes follow the SDK's examples. The first
-run should be ``python -m maya.check_hyperliquid --smoke``.
+hyperliquid-python-sdk 0.24.0 as installed. Signed orders ran on the
+Hyperliquid testnet 18-23 Nov 2026 (see docs/RUNNING.md); never on mainnet.
+The tests use an invented stand-in venue. The first run on a new account
+should be ``python -m maya.check_hyperliquid --smoke``.
 """
 from __future__ import annotations
 
@@ -87,6 +92,30 @@ def rejection(resp) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class ExitFill:
+    """This trade's exit as the venue filled it, in the signal's price space.
+
+    ``reason`` is ``stop_loss`` or ``take_profit`` when one of the trade's own
+    venue triggers did the filling, else None (a market close by the engine).
+    """
+
+    price: float
+    size: float
+    fee: float
+    reason: str | None = None
+
+
+def aggregate(fills: list[dict]) -> tuple[float, float, float] | None:
+    """Size-weighted price, total size and total fee of ``fills``."""
+    size = sum(float(f["sz"]) for f in fills)
+    if size <= 0:
+        return None
+    px = sum(float(f["px"]) * float(f["sz"]) for f in fills) / size
+    fee = sum(float(f.get("fee", 0) or 0) for f in fills)
+    return px, size, fee
+
+
 @dataclass
 class Clients:
     exchange: object
@@ -131,6 +160,7 @@ class HyperliquidSDKBroker:
         self._sleep, self._clock = sleep, clock
         self.sz_decimals = self._sz_decimals(self.coin)
         self.last_fill: Fill | None = None
+        self.last_exit: ExitFill | None = None
         self._stop_oid: int | None = None
         self._tp_oid: int | None = None
         self.unclosed: dict[str, str] = {}
@@ -169,6 +199,18 @@ class HyperliquidSDKBroker:
             if pos.get("coin") == coin:
                 return float(pos.get("szi", 0) or 0)
         return 0.0
+
+    def venue_size(self, symbol: str) -> float | None:
+        """Absolute size the venue holds in ``symbol``, or None if unreadable.
+
+        None is not 0: a failed read must never be taken for "flat", which
+        would book a close while the position is still open at the venue.
+        """
+        try:
+            return abs(self.position_size(to_hl_symbol(symbol)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[HL] could not read the {} position: {}", symbol, exc)
+            return None
 
     def _price_ratio(self) -> float | None:
         """Testnet mid over real mid, or 1.0 when prices are not mapped.
@@ -236,24 +278,35 @@ class HyperliquidSDKBroker:
         return False
 
     def _log_fill(self, what: str, oid: int | set | None, assumed_px: float, started: float,
-                  fills: list[dict] | None = None) -> None:
+                  fills: list[dict] | None = None) -> tuple[float, float, float] | None:
         """Fill price, fee and latency, next to the price the paper broker
-        would have booked. This comparison is the point of the testnet run."""
+        would have booked. This comparison is the point of the testnet run.
+        Returns the aggregate (price, size, fee), or None with no fill record."""
         latency_ms = (self._clock() - started) * 1000
         oids = oid if isinstance(oid, set) else {oid} - {None}
         if fills is None:
             fills = [f for f in self.info.user_fills(self.address) if f.get("oid") in oids]
-        if not fills:
+        agg = aggregate(fills)
+        if agg is None:
             logger.info("[HL] {} oid={} latency={:.0f}ms (no fill record yet)",
                         what, oid, latency_ms)
-            return
-        size = sum(float(f["sz"]) for f in fills)
-        px = sum(float(f["px"]) * float(f["sz"]) for f in fills) / size if size else 0.0
-        fee = sum(float(f.get("fee", 0) or 0) for f in fills)
+            return None
+        px, size, fee = agg
         slip_bps = (px / assumed_px - 1) * 10_000 if assumed_px else 0.0
         logger.info("[HL] {} filled {:.6f} @ {:.4f} fee=${:.6f} latency={:.0f}ms | "
                     "paper assumed {:.4f} ({:+.2f} bps)", what, size, px, fee,
                     latency_ms, assumed_px, slip_bps)
+        return agg
+
+    def _exit_fills(self, own: set[int], seen: set[tuple]) -> list[dict]:
+        """This trade's exit fills: its own stop or target, or fills that
+        appeared during this close. Regression: the newest fill for the coin
+        was taken, which after a refused close was the ENTRY fill, and on
+        PUMP an older trade's exit (77489 @ 0.0026, logged three times)."""
+        return [f for f in self.info.user_fills(self.address)
+                if f.get("coin") == self.coin
+                and (f.get("oid") in own
+                     or (f.get("oid"), f.get("px"), f.get("sz"), f.get("time")) not in seen)]
 
     # -- orders ------------------------------------------------------------- #
     def _trigger(self, is_buy: bool, size: float, trigger_px: float, tpsl: str) -> int | None:
@@ -354,7 +407,7 @@ class HyperliquidSDKBroker:
             logger.info("[HL] entry at {} did not fill within {:.0f}s; cancelled",
                         px, self.settings.hl_entry_timeout_s)
             return False
-        self._log_fill("entry", oid, px, started)
+        entry = self._log_fill("entry", oid, px, started)
 
         # The position exists and has no stop yet. Stop first, then target.
         self._stop_oid = self._trigger(not is_buy, filled, intent.stop_loss * ratio, "sl")
@@ -368,7 +421,8 @@ class HyperliquidSDKBroker:
                            "candle loop will take the target")
         # Reported in the signal's price space, so the engine's entry, stop
         # and target all stay on one scale.
-        self.last_fill = Fill(price=self._entry_price(px) / ratio, size=filled)
+        self.last_fill = Fill(price=self._entry_price(px) / ratio, size=filled,
+                              fee=entry[2] if entry else None)
         return True
 
     def _entry_price(self, fallback: float) -> float:
@@ -401,6 +455,7 @@ class HyperliquidSDKBroker:
         liquidated a day later.
         """
         self._use(pos.symbol)          # a no-op for the coin it opened; listed, since it did
+        self.last_exit = None
         started = self._clock()
         seen = self._fill_keys()
         if abs(self.position_size()) > 0:
@@ -427,16 +482,27 @@ class HyperliquidSDKBroker:
             logger.critical("[HL] {} order(s) still open on {} after the close: {}. Cancel "
                             "them by hand; they could close a later position.",
                             len(self.leftover_orders), self.coin, self.leftover_orders)
-        # This trade's exit fills only: its own stop or target, or fills that
-        # appeared during this close. Regression: the newest fill for the coin
-        # was taken, which after a refused close was the ENTRY fill, and on
-        # PUMP an older trade's exit (77489 @ 0.0026, logged three times).
         own = {self._stop_oid, self._tp_oid} - {None}
-        exits = [f for f in self.info.user_fills(self.address)
-                 if f.get("coin") == self.coin
-                 and (f.get("oid") in own
-                      or (f.get("oid"), f.get("px"), f.get("sz"), f.get("time")) not in seen)]
+        exits = self._exit_fills(own, seen)
+        # The venue can list a fill a moment after the position reads flat.
+        # A short wait here is what lets the journal book the real price.
+        for _ in range(3):
+            if exits:
+                break
+            self._sleep(1.0)
+            exits = self._exit_fills(own, seen)
         self._log_fill(f"exit ({reason})", None, price * self._ratio, started, fills=exits)
+        agg = aggregate(exits)
+        if agg is not None:
+            px, size, fee = agg
+            oids = {f.get("oid") for f in exits}
+            venue_reason = ("stop_loss" if self._stop_oid in oids
+                            else "take_profit" if self._tp_oid in oids else None)
+            self.last_exit = ExitFill(price=px / self._ratio, size=size, fee=fee,
+                                      reason=venue_reason)
+        else:
+            logger.warning("[HL] {} exit ({}) has no fill record; the engine books the "
+                           "planned price. Check the venue's fill history.", self.coin, reason)
         self._stop_oid = self._tp_oid = None
         return True
 

@@ -172,9 +172,11 @@ class ExecutionEngine:
             # size actually traded — a market entry's slippage or a partially
             # filled limit would otherwise be invisible in the journal.
             entry, qty, notional = intent.entry_price, decision.quantity, decision.position_notional
+            entry_fee = None
             fill = getattr(self.broker, "last_fill", None)
             if fill is not None and fill.price > 0 and fill.size > 0:
                 entry, qty, notional = fill.price, fill.size, fill.price * fill.size
+                entry_fee = getattr(fill, "fee", None)
             self.position = Position(
                 symbol=intent.symbol, direction=intent.direction,
                 setup_name=intent.setup_name, entry_price=entry,
@@ -182,7 +184,7 @@ class ExecutionEngine:
                 quantity=qty, notional=notional,
                 leverage=decision.leverage, opened_ts=ts,
                 confluence_score=intent.confluence_score, rr_planned=intent.expected_rr,
-                confluences=list(intent.confluences),
+                confluences=list(intent.confluences), entry_fee_usd=entry_fee,
             )
             return True
 
@@ -200,8 +202,28 @@ class ExecutionEngine:
             logger.critical("{} {} close ({}) refused by the venue; position kept open, "
                             "retrying next candle", pos.symbol, pos.direction, reason)
             return None
-        gross = pos.pnl_at(exit_price)
         fees = self.fees.cost_usd(pos.notional, self.order_type, reason)
+        # A broker that reads the venue's exit fill (Hyperliquid SDK) reports
+        # it, and that is what is booked. Regression (testnet, Nov 2026): the
+        # planned price was journaled, so the journal showed a profit the
+        # venue never paid and a stop that slipped 38 bps looked exact.
+        venue_exit = getattr(self.broker, "last_exit", None)
+        if venue_exit is not None and venue_exit.price > 0 and venue_exit.size > 0:
+            reason = venue_exit.reason or reason
+            # Compare against the level that actually filled, not the guess.
+            planned = (pos.stop_loss if venue_exit.reason == "stop_loss"
+                       else pos.take_profit if venue_exit.reason == "take_profit"
+                       else exit_price)
+            exit_price = venue_exit.price
+            if pos.entry_fee_usd is not None:
+                fees = pos.entry_fee_usd + venue_exit.fee
+            if abs(venue_exit.size - pos.quantity) > 1e-9 * max(1.0, pos.quantity):
+                logger.warning("{} exit filled {:g} of {:g}; PnL is booked on the full size",
+                               pos.symbol, venue_exit.size, pos.quantity)
+            logger.info("{} exit booked at the venue fill {:.6g} (planned {:.6g}, {:+.1f} bps)",
+                        pos.symbol, exit_price, planned,
+                        (exit_price / planned - 1) * 10_000 if planned else 0.0)
+        gross = pos.pnl_at(exit_price)
         pnl = gross - fees
         # Against the stop placed at entry: after a breakeven move the current
         # stop sits at entry, the risk reads as zero and every such trade —
@@ -375,6 +397,27 @@ class ExecutionEngine:
             if self.position is None:
                 return None
             return self._close(price, ts, "forced")
+
+    def book_venue_close(self, ts: int) -> TradeResult | None:
+        """Close locally because the venue shows the position flat: its stop
+        or target fired between candles. Hyperliquid SDK path only.
+
+        Goes through :meth:`_close`, so the broker cancels what is left of the
+        pair and the booked price is the venue's fill. The planned stop is
+        only the fallback when no fill is listed: an estimate that errs
+        towards a loss is the safe one.
+
+        Why (found reading the code after the Nov 2026 testnet run, not seen
+        in its logs): signals use real-market candles while the stop rests on
+        the testnet book, so a venue stop can fire with no candle touching
+        it. Without this the engine kept the trade open, and took no new
+        trade, until the hold limit closed it hours later.
+        """
+        with self.lock:
+            pos = self.position
+            if pos is None:
+                return None
+            return self._close(pos.stop_loss, ts, "stop_loss")
 
     def reconcile_external_close(self, exit_price: float, ts: int, reason: str,
                                   fees_usdt: float | None = None) -> TradeResult | None:

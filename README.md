@@ -359,8 +359,8 @@ Open, in the order they should happen:
    account and the weekly one halts most weeks (see the Monte Carlo section
    of `docs/RUNNING.md`).
 4. Get trade-level history so `mtf_15s_trigger` can be tested.
-5. Add a position monitor for the Hyperliquid SDK path, so exits are booked
-   at the real fill price.
+5. Run the Hyperliquid SDK position monitor and fill-price booking on
+   testnet. They're built and unit-tested, but haven't been run on the venue yet.
 
 Not before real money:
 

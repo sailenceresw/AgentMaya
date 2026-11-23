@@ -30,6 +30,9 @@ class Position:
     best_price: float | None = None
     # Set once an R-based trail has started (profit_trail_mode='r').
     trail_armed: bool = False
+    # The venue's own entry fee, when the broker read it from the fill
+    # history. None means unknown: the fee model is charged instead.
+    entry_fee_usd: float | None = None
 
     def __post_init__(self) -> None:
         if self.initial_stop_loss is None:
