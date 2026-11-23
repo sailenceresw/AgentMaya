@@ -3,7 +3,9 @@
 The LLM is a *second opinion only*: it receives a trade that already passed the
 rules-based engine and either approves it or vetoes it with reasoning. It can
 never originate a trade. Disabled unless ``MAYA_LLM_ENABLED=true`` and an
-Anthropic API key is present; on any error it fails OPEN-to-reject is too
+Anthropic API key is present. The model is called through LangChain
+(``langchain_anthropic.ChatAnthropic``), the stack the LangGraph pipeline
+already runs on; on any error it fails OPEN-to-reject is too
 aggressive, so it fails to "approve" and logs a warning (the deterministic
 risk layer remains the hard gate).
 """
@@ -12,6 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 
 from maya.config import Settings
@@ -94,16 +97,41 @@ class PulseContext:
         return text
 
 
+def build_chat_model(settings: Settings):
+    """Return the ``ChatAnthropic`` model the veto calls.
+
+    Every request option lives here, on the model, so tests can check the exact
+    payload offline with ``_get_request_payload`` and swap the model for a fake
+    without touching this wiring. The import is local so nothing outside the
+    veto (the risk layer in particular) ever loads LangChain's model code.
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    kwargs: dict = dict(
+        model=settings.llm_model,
+        api_key=settings.anthropic_api_key,
+        max_tokens=_MAX_TOKENS,
+        effort=settings.llm_effort,
+        output_config={"format": {"type": "json_schema", "schema": _VERDICT_SCHEMA}},
+        # One attempt per candle. A retry loop would hold the per-candle path
+        # for seconds, and a failed review approves anyway.
+        max_retries=0,
+    )
+    if settings.llm_model in _FALLBACK_MODELS:
+        kwargs.update(betas=[_FALLBACK_BETA], model_kwargs={"fallbacks": "default"})
+    return ChatAnthropic(**kwargs)
+
+
 class LLMFilter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.enabled = settings.llm_enabled and bool(settings.anthropic_api_key)
-        self._client = None
+        self._llm = None
         if self.enabled:
             try:
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-                logger.info("LLM veto layer ENABLED (model={})", settings.llm_model)
+                self._llm = build_chat_model(settings)
+                logger.info("LLM veto layer ENABLED via LangChain (model={})",
+                            settings.llm_model)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LLM layer disabled (import/init failed): {}", exc)
                 self.enabled = False
@@ -118,7 +146,7 @@ class LLMFilter:
 
     def review(self, intent: TradeIntent, sig: SignalObject) -> tuple[bool, str]:
         """Return ``(approved, reason)``. Approves transparently when disabled."""
-        if not self.enabled or self._client is None:
+        if not self.enabled or self._llm is None:
             return True, "llm_disabled"
 
         payload = {
@@ -134,18 +162,18 @@ class LLMFilter:
             pulse = self._pulse.get(intent.symbol)
             if pulse:
                 payload["metamask_pulse"] = pulse
-        request = dict(
-            model=self.settings.llm_model,
-            max_tokens=_MAX_TOKENS,
-            system=_SYSTEM,
-            output_config={"effort": self.settings.llm_effort,
-                           "format": {"type": "json_schema", "schema": _VERDICT_SCHEMA}},
-            messages=[{"role": "user", "content": json.dumps(payload, default=str)}],
-        )
-        if self.settings.llm_model in _FALLBACK_MODELS:
-            request.update(betas=[_FALLBACK_BETA], fallbacks="default")
+        messages = [SystemMessage(_SYSTEM),
+                    HumanMessage(json.dumps(payload, default=str))]
+        # run_name/tags/metadata label the call in LangSmith when tracing is on;
+        # with tracing off LangChain ignores them.
+        config = {
+            "run_name": "maya_llm_veto",
+            "tags": ["maya", "llm_veto", self.settings.mode.value],
+            "metadata": {"symbol": intent.symbol, "setup": intent.setup_name,
+                         "direction": str(intent.direction)},
+        }
         try:
-            msg = self._client.beta.messages.create(**request)
+            msg = self._llm.invoke(messages, config=config)
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM review failed, approving by default: {}", exc)
             return True, f"llm_error:{exc}"
@@ -153,13 +181,15 @@ class LLMFilter:
         # The deterministic risk layer is the hard gate; the LLM can only add
         # a veto. So every way the review fails to produce a verdict approves,
         # loudly, rather than blocking trading on an API problem.
-        if msg.stop_reason == "refusal":
+        stop_reason = (getattr(msg, "response_metadata", None) or {}).get("stop_reason")
+        if stop_reason == "refusal":
             logger.warning("LLM declined to review the trade; approving by default")
             return True, "llm_refused"
-        if msg.stop_reason == "max_tokens":
+        if stop_reason == "max_tokens":
             logger.warning("LLM review hit max_tokens before a verdict; approving by default")
             return True, "llm_truncated"
-        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        # AIMessage.text joins the text blocks and skips thinking blocks.
+        text = msg.text
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:

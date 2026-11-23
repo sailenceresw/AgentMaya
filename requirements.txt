@@ -1,6 +1,6 @@
 # Core graph runtime
 langgraph>=0.2.0
-langchain-core>=0.3.0
+langchain-core>=1.0,<2
 
 # Data / math
 pandas>=2.0
@@ -26,8 +26,11 @@ hyperliquid-python-sdk>=0.24,<1
 # Optional real-time WebSocket ingestion (only used when MAYA_USE_WEBSOCKET=true)
 websockets>=12.0
 
-# Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true)
-anthropic>=1.13.0   # output_config + server-side refusal fallbacks
+# Optional LLM confluence/veto layer (only imported when MAYA_LLM_ENABLED=true).
+# The veto calls Claude through LangChain's ChatAnthropic, which needs 1.7+ for
+# the `effort` and `output_config` (structured outputs) fields. It pulls in the
+# Anthropic SDK itself.
+langchain-anthropic>=1.7.12,<2
 
 # Optional backtest charts (MAYA_BACKTEST_PLOT / sweep --plot-dir)
 matplotlib>=3.8
