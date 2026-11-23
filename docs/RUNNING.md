@@ -1228,6 +1228,11 @@ export ANTHROPIC_API_KEY=sk-ant-...
 When enabled, an LLM reviews each trade the rules already approved and may
 **veto** it (it can never originate a trade — spec section 6.4).
 
+- **Client:** the call goes through LangChain (`langchain_anthropic.ChatAnthropic`,
+  built in `maya.strategy.llm_filter.build_chat_model`), the same stack the
+  LangGraph pipeline runs on. It makes one attempt per review (`max_retries=0`),
+  since a failed review approves anyway and retries would stall the candle.
+
 - **Model:** `MAYA_LLM_MODEL`, default `claude-opus-5-5`, at
   `MAYA_LLM_EFFORT=low`. A veto is a short yes/no judgement. On this model
   thinking is always on and counts against the response budget, so the
