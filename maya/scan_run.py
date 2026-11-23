@@ -123,6 +123,8 @@ def main() -> None:
                         "(or testnet/live).")
         sys.exit(2)
     _guard_live(settings)
+    from maya.tracing import log_startup
+    log_startup(settings)
     equity = _startup_reconciliation(settings)
     now_ts = int(time.time() * 1000)
 

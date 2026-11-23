@@ -20,6 +20,7 @@ from loguru import logger
 from maya.config import Settings
 from maya.signals.models import SignalObject
 from maya.strategy.models import TradeIntent
+from maya.tracing import trace
 
 _SYSTEM = (
     "You are a risk-aware trading co-pilot. You are given a candidate trade that "
@@ -173,7 +174,8 @@ class LLMFilter:
                          "direction": str(intent.direction)},
         }
         try:
-            msg = self._llm.invoke(messages, config=config)
+            with trace(self.settings, "llm"):
+                msg = self._llm.invoke(messages, config=config)
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM review failed, approving by default: {}", exc)
             return True, f"llm_error:{exc}"

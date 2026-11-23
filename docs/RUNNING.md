@@ -1252,6 +1252,33 @@ When enabled, an LLM reviews each trade the rules already approved and may
 - **Context:** with `MAYA_PULSE_ENABLED=true` the review also receives
   MetaMask Pulse's market summary (see the MetaMask section).
 
+## Optional LangSmith tracing
+
+Maya runs on LangGraph and calls Claude through LangChain, so LangSmith can
+record the LLM veto and, if you want, every graph run.
+
+```bash
+# in .env
+MAYA_LANGSMITH_TRACE=llm          # off | llm | graph
+LANGSMITH_API_KEY=lsv2_...        # LangSmith: Settings -> API Keys
+MAYA_LANGSMITH_PROJECT=maya
+```
+
+- **`llm`**: one trace per LLM veto, tagged `llm_veto` with symbol, setup and
+  direction in the metadata. Vetoes only run on trades the rules approved, so
+  this is a few traces a day. Needs `MAYA_LLM_ENABLED=true` to have anything
+  to trace.
+- **`graph`**: also one trace per closed candle (`maya_candle`), showing every
+  node. On 1m that is about 1,440 traces a day, which uses up a free plan's
+  monthly allowance within days. Use it for short debugging runs.
+- **Switch:** tracing is scoped per call with `langsmith.tracing_context`. A
+  global `LANGSMITH_TRACING=true` does not turn it on, and `off` overrides it.
+- **Safety:** tracing never blocks trading. Upload errors are logged by the
+  LangSmith client in the background and the candle loop carries on.
+- **EU accounts:** set `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`.
+- Tests pin `MAYA_LANGSMITH_TRACE=off` (`tests/conftest.py`), so a key in your
+  `.env` never sends test runs.
+
 ## Tests
 
 ```bash

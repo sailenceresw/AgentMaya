@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -310,6 +311,16 @@ class Settings(BaseSettings):
     # A veto is a short yes/no judgement; low effort keeps it fast and cheap.
     llm_effort: str = "low"
 
+    # LangSmith tracing (maya.tracing). off | llm | graph.
+    #   llm   - trace only the LLM veto calls (a few a day).
+    #   graph - also trace every graph run: one trace per closed candle, about
+    #           1,440 a day on 1m. Meant for short debugging runs; it uses up a
+    #           free LangSmith plan's monthly trace allowance in days.
+    # Needs LANGSMITH_API_KEY. Scoped with langsmith.tracing_context, so a
+    # global LANGSMITH_TRACING env var does not switch it on by itself.
+    langsmith_trace: Literal["off", "llm", "graph"] = "off"
+    langsmith_project: str = "maya"
+
     log_level: str = "INFO"
 
     # -- Layer 7 monitoring API / dashboard --------------------------------- #
@@ -331,6 +342,12 @@ class Settings(BaseSettings):
     binance_api_key: str = Field(default="", validation_alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", validation_alias="BINANCE_API_SECRET")
     anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    langsmith_api_key: str = Field(default="", validation_alias="LANGSMITH_API_KEY")
+    # US cloud by default; EU accounts use https://eu.api.smith.langchain.com.
+    langsmith_endpoint: str = Field(default="https://api.smith.langchain.com",
+                                    validation_alias="LANGSMITH_ENDPOINT")
+    # Only needed for org-scoped keys that can see several workspaces.
+    langsmith_workspace_id: str = Field(default="", validation_alias="LANGSMITH_WORKSPACE_ID")
 
     @field_validator("leverage")
     @classmethod
