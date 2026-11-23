@@ -512,6 +512,191 @@ def test_engine_keeps_the_position_when_the_venue_refuses_the_close():
     assert eng.position is not None and eng.busy
 
 
+# -- exits booked at the venue's fill --------------------------------------- #
+def _stop_fill(venue, broker, px, fee="0.02"):
+    """The venue's stop trigger fires at ``px`` (invented numbers)."""
+    venue.fills.append({"coin": "BTC", "oid": broker._stop_oid, "px": str(px),
+                        "sz": str(abs(venue.size)), "fee": fee, "time": 1})
+    venue.orders.pop(broker._stop_oid, None)
+    venue.size = 0.0
+
+
+def test_close_reports_the_venue_exit_fill_and_which_trigger_filled():
+    venue = _Venue()
+    broker = _broker(venue)
+    broker.open_position(_intent(), 0.001, 10)
+    _stop_fill(venue, broker, 59500.0)                 # slipped 200 under the 59700 stop
+    assert broker.close_position(_pos(), 59700.0, "take_profit") is True
+    assert broker.last_exit.price == 59500.0 and broker.last_exit.size == 0.001
+    assert broker.last_exit.fee == pytest.approx(0.02)
+    assert broker.last_exit.reason == "stop_loss"      # the venue's trigger, not the guess
+
+
+def test_venue_exit_is_reported_on_the_signal_scale():
+    venue = _Venue(mid=59400.0)                        # testnet 1% under the real 60000
+    broker = _mapped(venue, _Real(60000.0))
+    broker.open_position(_intent(), 0.001, 10)
+    _stop_fill(venue, broker, 59004.0)
+    broker.close_position(_pos(), 59700.0, "stop_loss")
+    assert broker.last_exit.price == pytest.approx(59600.0)     # 59004 / 0.99
+
+
+def test_entry_fee_is_read_from_the_entry_fill():
+    venue = _Venue()
+    broker = _broker(venue)
+    broker.open_position(_intent(), 0.001, 10)
+    assert broker.last_fill.fee == pytest.approx(60000.0 * 0.001 * 0.00015)
+
+
+def test_no_fill_record_waits_briefly_then_reports_none():
+    venue = _Venue()
+    naps: list[float] = []
+    ticks = iter(range(10_000))
+    broker = HyperliquidSDKBroker(_settings(), Clients(venue, venue), sleep=naps.append,
+                                  clock=lambda: float(next(ticks)))
+    broker.open_position(_intent(), 0.001, 10)
+    venue.size = 0.0                                   # flat, but no fill listed
+    assert broker.close_position(_pos(), 59700.0, "stop_loss") is True
+    assert broker.last_exit is None and naps == [1.0, 1.0, 1.0]
+
+
+def test_a_fill_listed_a_moment_late_is_still_used():
+    venue = _Venue()
+    broker = _broker(venue)
+    broker.open_position(_intent(), 0.001, 10)
+    stop_oid = broker._stop_oid
+    venue.size = 0.0
+    reads = {"n": 0}
+    real = venue.user_fills
+
+    def late(address):
+        reads["n"] += 1
+        if reads["n"] == 3:                            # appears on the second exit read
+            venue.fills.append({"coin": "BTC", "oid": stop_oid, "px": "59650",
+                                "sz": "0.001", "fee": "0.01", "time": 2})
+        return real(address)
+    venue.user_fills = late
+    broker.close_position(_pos(), 59700.0, "stop_loss")
+    assert broker.last_exit is not None and broker.last_exit.price == 59650.0
+
+
+class _Decision:
+    approved = True
+    quantity = 0.001
+    position_notional = 60.0
+    leverage = 10
+
+
+def _engine_on(venue):
+    from maya.execution.engine import ExecutionEngine
+
+    eng = ExecutionEngine(Settings(mode=RunMode.SIM))
+    eng.broker = _broker(venue)
+    assert eng.open(_intent(), _Decision(), ts=0) is True
+    return eng
+
+
+def test_engine_books_the_venue_exit_price_and_fees_not_the_planned_ones():
+    """Regression (testnet, Nov 2026): the journal booked the planned stop
+    and target, so it showed a profit the venue never paid, and a PUMP stop
+    that slipped 38 bps looked exact."""
+    from maya.data.models import Candle
+
+    venue = _Venue()
+    eng = _engine_on(venue)
+    entry_fee = eng.position.entry_fee_usd
+    assert entry_fee == pytest.approx(0.009)
+    _stop_fill(venue, eng.broker, 59500.0, fee="0.02")
+    stop_hit = Candle(timestamp=60_000, open=59800, high=59800, low=59600, close=59650,
+                      volume=1, taker_buy_volume=0.5)
+    result = eng.manage(stop_hit)
+    assert result.exit_price == 59500.0                         # not the planned 59700
+    assert result.fees_usdt == pytest.approx(entry_fee + 0.02)  # the venue's, not the model's
+    assert result.pnl_usdt == pytest.approx((59500.0 - 60000.0) * 0.001 - entry_fee - 0.02)
+
+
+def test_engine_falls_back_to_the_planned_price_without_a_fill_record():
+    from maya.data.models import Candle
+
+    venue = _Venue()
+    eng = _engine_on(venue)
+    venue.size = 0.0                                            # flat, no fill listed
+    stop_hit = Candle(timestamp=60_000, open=59800, high=59800, low=59600, close=59650,
+                      volume=1, taker_buy_volume=0.5)
+    assert eng.manage(stop_hit).exit_price == 59700.0
+
+
+# -- position monitor on the SDK path --------------------------------------- #
+class _Journal:
+    def __init__(self):
+        self.rows = []
+
+    def record(self, result, confluences):
+        self.rows.append(result)
+
+
+class _Risk:
+    def __init__(self):
+        self.closed = []
+
+    def on_trade_closed(self, pnl, ts):
+        self.closed.append(pnl)
+
+
+def _monitored(venue):
+    from maya.execution.monitor import PositionMonitor
+
+    eng = _engine_on(venue)
+    journal, risk = _Journal(), _Risk()
+    return eng, PositionMonitor(_settings(), eng, journal, risk), journal, risk
+
+
+def test_monitor_books_a_venue_stop_no_candle_touched():
+    """Signals use real-market candles; the stop rests on the testnet book.
+    A venue stop that fired with no candle touching it left the engine in
+    the trade until the hold limit. The monitor now books it at the fill."""
+    venue = _Venue()
+    eng, monitor, journal, risk = _monitored(venue)
+    _stop_fill(venue, eng.broker, 59550.0)
+    monitor._poll_once()
+    assert eng.position is not None and journal.rows == []      # one flat read is not enough
+    monitor._poll_once()
+    assert eng.position is None and venue.orders == {}          # target cancelled
+    assert len(journal.rows) == 1 and journal.rows[0].exit_price == 59550.0
+    assert journal.rows[0].reason == "stop_loss"
+    assert risk.closed == [journal.rows[0].pnl_usdt]
+
+
+def test_monitor_reports_a_venue_target_as_a_take_profit():
+    venue = _Venue()
+    eng, monitor, journal, _ = _monitored(venue)
+    tp_oid = eng.broker._tp_oid
+    venue.fills.append({"coin": "BTC", "oid": tp_oid, "px": "61500", "sz": "0.001",
+                        "fee": "0.01", "time": 1})
+    venue.size = 0.0
+    monitor._poll_once()
+    monitor._poll_once()
+    assert journal.rows[0].reason == "take_profit" and journal.rows[0].result == "win"
+
+
+def test_monitor_never_books_on_an_unreadable_or_open_venue():
+    venue = _Venue()
+    eng, monitor, journal, _ = _monitored(venue)
+    monitor._poll_once()
+    monitor._poll_once()                                        # still open at the venue
+    assert eng.position is not None and journal.rows == []
+    venue.size = 0.0
+    monitor._poll_once()                                        # flat once...
+    real = venue.user_state
+    venue.user_state = lambda address: (_ for _ in ()).throw(ConnectionError("timeout"))
+    monitor._poll_once()                                        # ...then unreadable: resets
+    venue.user_state = real
+    monitor._poll_once()                                        # flat once again
+    assert eng.position is not None and journal.rows == []
+    monitor._poll_once()
+    assert eng.position is None and len(journal.rows) == 1
+
+
 # -- startup safety --------------------------------------------------------- #
 def test_startup_closes_a_position_that_has_no_stop():
     venue = _Venue()

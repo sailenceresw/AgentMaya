@@ -78,6 +78,9 @@ class Fill:
 
     price: float
     size: float
+    # USD fee the venue charged for the entry, when its fill history shows
+    # it (Hyperliquid SDK path). None means "unknown": charge the fee model.
+    fee: float | None = None
 
 
 @dataclass
