@@ -1,0 +1,167 @@
+{
+  "dataset": "perp",
+  "features": [
+    "ret_1h",
+    "ret_4h",
+    "ret_12h",
+    "ret_24h",
+    "ret_72h",
+    "vol_24h",
+    "vol_168h",
+    "vol_ratio",
+    "delta_ratio_1h",
+    "cvd_4h",
+    "cvd_12h",
+    "cvd_24h",
+    "cvd_72h",
+    "div_24h",
+    "volume_z168",
+    "dist_sma24",
+    "dist_sma168",
+    "range_pct",
+    "funding_last",
+    "funding_avg3",
+    "funding_chg",
+    "hour",
+    "dow"
+  ],
+  "fee_per_side": 0.0005,
+  "bonferroni_tries": 18,
+  "development": {
+    "decisions": 730,
+    "up_rate": 0.511,
+    "buy_and_hold": {
+      "total_return_%": 75.1,
+      "sharpe": 0.83,
+      "max_drawdown_%": -32.6
+    },
+    "logit": {
+      "auc": 0.5593,
+      "auc_p": 0.0028,
+      "traded_%": 48.8,
+      "long_%": 34.0,
+      "gross_%": 221.9,
+      "timing_p": 0.0074,
+      "passes_corrected": false,
+      "fees_%": 23.6,
+      "total_return_%": 148.6,
+      "sharpe": 1.48,
+      "max_drawdown_%": -23.5,
+      "by_year_%": {
+        "2024": 32.1,
+        "2025": 88.2
+      }
+    },
+    "gbm": {
+      "auc": 0.5621,
+      "auc_p": 0.0018,
+      "traded_%": 59.6,
+      "long_%": 36.8,
+      "gross_%": 95.2,
+      "timing_p": 0.0854,
+      "passes_corrected": false,
+      "fees_%": 26.3,
+      "total_return_%": 50.9,
+      "sharpe": 0.74,
+      "max_drawdown_%": -31.1,
+      "by_year_%": {
+        "2024": 3.9,
+        "2025": 45.3
+      }
+    },
+    "rf": {
+      "auc": 0.5395,
+      "auc_p": 0.0324,
+      "traded_%": 40.4,
+      "long_%": 33.4,
+      "gross_%": 61.5,
+      "timing_p": 0.208,
+      "passes_corrected": false,
+      "fees_%": 18.4,
+      "total_return_%": 29.6,
+      "sharpe": 0.56,
+      "max_drawdown_%": -23.0,
+      "by_year_%": {
+        "2024": 19.9,
+        "2025": 8.1
+      }
+    },
+    "et": {
+      "auc": 0.5531,
+      "auc_p": 0.0065,
+      "traded_%": 14.9,
+      "long_%": 14.9,
+      "gross_%": 58.2,
+      "timing_p": 0.0768,
+      "passes_corrected": false,
+      "fees_%": 8.5,
+      "total_return_%": 42.4,
+      "sharpe": 0.94,
+      "max_drawdown_%": -11.6,
+      "by_year_%": {
+        "2024": 7.9,
+        "2025": 31.9
+      }
+    },
+    "mlp": {
+      "auc": 0.5385,
+      "auc_p": 0.0358,
+      "traded_%": 77.9,
+      "long_%": 43.4,
+      "gross_%": 278.7,
+      "timing_p": 0.0056,
+      "passes_corrected": false,
+      "fees_%": 32.6,
+      "total_return_%": 172.3,
+      "sharpe": 1.42,
+      "max_drawdown_%": -38.2,
+      "by_year_%": {
+        "2024": 12.8,
+        "2025": 141.3
+      }
+    },
+    "ensemble": {
+      "auc": 0.5606,
+      "auc_p": 0.0023,
+      "traded_%": 48.2,
+      "long_%": 33.8,
+      "gross_%": 194.2,
+      "timing_p": 0.012,
+      "passes_corrected": false,
+      "fees_%": 22.7,
+      "total_return_%": 131.3,
+      "sharpe": 1.38,
+      "max_drawdown_%": -26.2,
+      "by_year_%": {
+        "2024": 27.8,
+        "2025": 81.0
+      }
+    },
+    "gbm_reg": {
+      "auc": 0.5334,
+      "auc_p": 0.0592,
+      "traded_%": 75.8,
+      "long_%": 53.8,
+      "gross_%": 23.7,
+      "timing_p": 0.4473,
+      "passes_corrected": false,
+      "fees_%": 23.2,
+      "total_return_%": -5.1,
+      "sharpe": 0.14,
+      "max_drawdown_%": -56.2,
+      "by_year_%": {
+        "2024": -23.5,
+        "2025": 24.0
+      }
+    }
+  },
+  "shuffled_label_auc": {
+    "logit": 0.4931,
+    "gbm": 0.5081,
+    "rf": 0.5013,
+    "et": 0.4967,
+    "mlp": 0.5037,
+    "ensemble": 0.5017
+  },
+  "minutes": 3.2
+}

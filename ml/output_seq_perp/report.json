@@ -1,0 +1,55 @@
+{
+  "dataset": "perp",
+  "channels": [
+    "ret_1h",
+    "range_pct",
+    "volume_z168",
+    "delta_ratio_1h"
+  ],
+  "lookback_h": 96,
+  "development": {
+    "decisions": 730,
+    "buy_and_hold": {
+      "total_return_%": 75.1,
+      "sharpe": 0.83,
+      "max_drawdown_%": -32.6
+    },
+    "cnn": {
+      "auc": 0.4947,
+      "auc_p": 0.5981,
+      "traded_%": 3.2,
+      "gross_%": 4.1,
+      "timing_p": 0.4307,
+      "passes_corrected": false,
+      "fees_%": 0.8,
+      "total_return_%": 2.9,
+      "sharpe": 0.19,
+      "max_drawdown_%": -12.0,
+      "by_year_%": {
+        "2024": -3.2,
+        "2025": 6.3
+      }
+    },
+    "lstm": {
+      "auc": 0.4904,
+      "auc_p": 0.6725,
+      "traded_%": 4.9,
+      "gross_%": 8.4,
+      "timing_p": 0.3861,
+      "passes_corrected": false,
+      "fees_%": 2.3,
+      "total_return_%": 5.1,
+      "sharpe": 0.26,
+      "max_drawdown_%": -11.7,
+      "by_year_%": {
+        "2024": 0.0,
+        "2025": 5.1
+      }
+    }
+  },
+  "shuffled_label_auc": {
+    "cnn": 0.488,
+    "lstm": 0.5251
+  },
+  "minutes": 2.3
+}

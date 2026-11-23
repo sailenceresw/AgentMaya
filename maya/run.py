@@ -151,18 +151,62 @@ def _start_api(settings: Settings, nodes: TradingNodes, journal: TradeJournal,
         return None
     try:
         from maya.api.server import MonitorServer, build_snapshot
+        from maya.viz.chart import agent_chart
 
         server = MonitorServer(
             settings,
             snapshot_fn=lambda: build_snapshot(settings, nodes, journal, processed_fn()),
             trades_fn=journal.recent,
             halt_fn=lambda reason: nodes.risk.manual_halt(),
+            # Drawn on request, never on the candle path, so it cannot slow or
+            # change trading. The scanner holds no candles, so its charts are
+            # fetched (regression: the scanner dashboard's chart always failed).
+            chart_fn=lambda tf, bars, coin=None: agent_chart(nodes, tf, bars, coin),
         )
         server.start()
         return server
     except Exception as exc:  # noqa: BLE001 - the dashboard must never stop trading
         logger.error("monitoring API failed to start — trading continues: {}", exc)
         return None
+
+
+def _start_telegram(settings: Settings, nodes, journal: TradeJournal,
+                    processed_fn) -> "object | None":
+    """Start the Telegram bot, if enabled. Never fatal, like the API."""
+    if not settings.telegram_enabled:
+        return None
+    try:
+        from maya.api.server import build_snapshot
+        from maya.api.telegram import TelegramBot
+        from maya.viz.chart import agent_chart
+
+        bot = TelegramBot(
+            settings,
+            snapshot_fn=lambda: build_snapshot(settings, nodes, journal, processed_fn()),
+            trades_fn=journal.recent,
+            halt_fn=lambda reason: nodes.risk.manual_halt(),
+            # The scanner holds no candles, so its charts are fetched on request.
+            chart_fn=lambda tf, bars, coin=None: agent_chart(nodes, tf, bars, coin),
+        )
+        bot.start()
+        return bot
+    except Exception as exc:  # noqa: BLE001 - alerts must never stop trading
+        logger.error("Telegram bot failed to start — trading continues: {}", exc)
+        return None
+
+
+def _stop_telegram(bot, settings: Settings, nodes, journal: TradeJournal,
+                   processed: int) -> None:
+    if bot is None:
+        return
+    try:
+        from maya.api.server import build_snapshot
+        from maya.api.telegram import format_status
+        final = "Maya stopped.\n" + format_status(build_snapshot(settings, nodes, journal,
+                                                                  processed))
+    except Exception:  # noqa: BLE001
+        final = "Maya stopped."
+    bot.stop(final)
 
 
 def main() -> None:
@@ -191,6 +235,7 @@ def main() -> None:
 
     processed = 0
     api = _start_api(settings, nodes, journal, lambda: processed)
+    telegram = _start_telegram(settings, nodes, journal, lambda: processed)
     watchdog = _start_watchdog(settings, nodes.risk)
     last_candle = None
     try:
@@ -200,7 +245,11 @@ def main() -> None:
                 watchdog.beat()
             graph.invoke({"candle": candle})
             processed += 1
-            if nodes.risk.account.state.value == "halted":
+            # A daily/weekly loss halt lifts at the next period, so keep reading
+            # candles (no new trades are approved meanwhile); stop only for a
+            # halt a person must clear.
+            if (nodes.risk.account.state.value == "halted"
+                    and not nodes.risk.halt_lifts_by_itself):
                 logger.critical("System HALTED ({}). Stopping new candles.",
                                 ", ".join(nodes.risk.account.halt_reasons))
                 break
@@ -224,6 +273,8 @@ def main() -> None:
                                 int(time.time() * 1000))
 
         _report(nodes, journal, processed)
+        # After the flatten, so the goodbye message shows the final equity.
+        _stop_telegram(telegram, settings, nodes, journal, processed)
         journal.close()
 
 

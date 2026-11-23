@@ -33,8 +33,9 @@ def _edge(mean_bps: float, sd_bps: float = 30.0):
     """A generator with a known true edge, one trade per candle."""
     def gen(data):
         rng = random.Random(1)
-        return [Sample(c.timestamp, rng.gauss(mean_bps, sd_bps) / 10_000)
-                for cs in data.values() for c in cs]
+        return [Sample(c.timestamp, rng.gauss(mean_bps, sd_bps) / 10_000, sym,
+                       1 if i % 2 else -1, DAY // 4)
+                for sym, cs in data.items() for i, c in enumerate(cs)]
     return gen
 
 
@@ -183,10 +184,11 @@ def test_holdout_is_spent_even_if_it_crashes(data, registry):
 def test_holdout_judges_only_holdout_trades(data, registry):
     # Strong edge before the cutoff, losing after it: research passes, holdout fails.
     def gen(d):
-        return [Sample(c.timestamp, 0.003 if c.timestamp < data.cutoff else -0.003)
-                for cs in d.values() for c in cs if (c.timestamp // 1000) % 7 != 0] + \
-               [Sample(c.timestamp, 0.0029 if c.timestamp < data.cutoff else -0.0031)
-                for cs in d.values() for c in cs if (c.timestamp // 1000) % 7 == 0]
+        return [Sample(c.timestamp, 0.003 if c.timestamp < data.cutoff else -0.003, s, 1, DAY // 4)
+                for s, cs in d.items() for c in cs if (c.timestamp // 1000) % 7 != 0] + \
+               [Sample(c.timestamp, 0.0029 if c.timestamp < data.cutoff else -0.0031, s, 1,
+                       DAY // 4)
+                for s, cs in d.items() for c in cs if (c.timestamp // 1000) % 7 == 0]
     hyp = Hypothesis("decays", "", gen)
     assert run_research(hyp, data, registry).passed
     assert not run_holdout(hyp, data, registry).passed

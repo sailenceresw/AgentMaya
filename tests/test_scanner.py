@@ -135,6 +135,95 @@ def test_parse_hyperliquid_markets_reads_the_public_payload():
     assert markets[1].binance_symbol == "1000PEPEUSDT"
 
 
+def _growing(candles, calls):
+    """A fetcher that only knows candles up to a moving 'now' (``calls['upto']``)."""
+    def fetch(symbol, count):
+        calls["counts"].append(count)
+        return list(candles[: calls["upto"] + 1])[-count:]
+    return fetch
+
+
+def test_readings_persist_between_scans_like_the_backtest(setup_candles):
+    """Regression: each scan rebuilt every coin from the last scan_lookback
+    candles, which differed from the continuous run the strategy was measured
+    on (live replay: 2 of 9 setups missed). With a window too short to hold
+    the setup's history, the old rebuild never sees it; kept-alive readings
+    fire on exactly the bar a continuous run does."""
+    trigger = len(setup_candles) - 1
+    calls = {"upto": 5, "counts": []}
+    scanner = Scanner(_settings(scan_lookback=6), fetch_markets=lambda: [_markets()[0]],
+                      fetch_candles=_growing(setup_candles, calls))
+    found, states = [], []
+    for i in range(5, trigger + 1):
+        calls["upto"] = i
+        res = scanner.scan(now_ts=setup_candles[i].timestamp)[0]
+        found.append(res.intent is not None)
+        states.append(scanner._state["BTCUSDT"])
+    assert found[-1] and not any(found[:-1])           # fires on the trigger bar only
+    assert all(s is states[0] for s in states)         # warmed once, then only topped up
+
+    # The old way (rebuild from the last 6 candles at the trigger) misses it.
+    proc, strat = SignalProcessor("BTCUSDT"), StrategyEngine(_settings())
+    last = None
+    for c in setup_candles[-6:]:
+        last = strat.evaluate(proc.process(c))
+    assert last is None
+
+
+def test_a_reading_is_not_reused_once_its_candle_is_old(setup_candles):
+    calls = {"upto": len(setup_candles) - 1, "counts": []}
+    scanner = Scanner(_settings(), fetch_markets=lambda: [_markets()[0]],
+                      fetch_candles=_growing(setup_candles, calls))
+    t = setup_candles[-1].timestamp
+    assert scanner.scan(now_ts=t)[0].tradable
+    # Binance has not published a newer bar two minutes later: no second trade.
+    res = scanner.scan(now_ts=t + 2 * 60_000)[0]
+    assert not res.tradable and res.rejected == "no new closed candle yet"
+
+
+def test_a_hole_in_the_history_rebuilds_the_coin(setup_candles):
+    calls = {"upto": 5, "counts": []}
+    scanner = Scanner(_settings(scan_lookback=6), fetch_markets=lambda: [_markets()[0]],
+                      fetch_candles=_growing(setup_candles, calls))
+    scanner.scan(now_ts=setup_candles[5].timestamp)
+    before = scanner._state["BTCUSDT"]
+    # Later, the top-up comes back with bars missing in between (an outage):
+    # its oldest bar is well past the last one processed.
+    replies = iter([setup_candles[-2:], setup_candles[-6:]])
+    scanner.fetch_candles = lambda symbol, n: list(next(replies))
+    scanner.scan(now_ts=setup_candles[-1].timestamp)
+    after = scanner._state["BTCUSDT"]
+    assert after is not before and after.last_ts == setup_candles[-1].timestamp
+    assert list(after.candles) == setup_candles[-6:]               # a clean warm-up
+
+
+def test_candle_fetch_pages_forward_to_the_newest_bars(monkeypatch):
+    """Regression: one request returns one page counted from the start time,
+    so asking for more than a page returned the OLDEST bars."""
+    import sys
+    import types
+
+    from maya.scanner import binance_candle_fetcher
+    minute, now = 60_000, 10_000 * 60_000
+
+    class _Ex:
+        def __init__(self, *a, **k):
+            pass
+
+        def milliseconds(self):
+            return now
+
+        def fapiPublicGetKlines(self, params):
+            start = params["startTime"] // minute * minute
+            return [[t, 1, 1, 1, 1, 1, 0, 0, 0, 0.5] for t in
+                    range(start, min(start + 1000 * minute, now), minute)]
+
+    monkeypatch.setitem(sys.modules, "ccxt", types.SimpleNamespace(binanceusdm=_Ex))
+    candles = binance_candle_fetcher(Settings())("BTCUSDT", 1500)
+    assert len(candles) == 1500
+    assert candles[-1].timestamp == now - minute            # the newest closed bar
+
+
 def test_table_renders(setup_candles):
     out = format_table(_scanner(setup_candles).scan(now_ts=setup_candles[-1].timestamp))
     assert "TRADE" in out and "BTC" in out

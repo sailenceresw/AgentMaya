@@ -37,7 +37,7 @@ import secrets
 import socket
 import threading
 from typing import TYPE_CHECKING, Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from loguru import logger
 
@@ -45,7 +45,11 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for type check
     from maya.journal.store import TradeJournal
     from maya.nodes import TradingNodes
 
-from maya.config import Settings
+from maya.config import RiskLimits, Settings
+
+
+MAX_HALT_BODY = 4096       # bytes accepted by POST /api/halt
+MAX_HALT_REASON = 200      # characters of the halt reason that are kept
 
 
 def json_safe(value: Any) -> Any:
@@ -124,6 +128,20 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
             "open_positions": acc.open_positions,
             "trades_today": acc.trades_today,
             "consecutive_losses": acc.consecutive_losses,
+            # For "how close to each limit" read-outs (Telegram /limits).
+            "day_start_equity": round(acc.day_start_equity, 2),
+            "week_start_equity": round(acc.week_start_equity, 2),
+            "cooldown_until_ts": acc.cooldown_until_ts,
+        },
+        # The hard limits themselves, read from RiskLimits so a read-out can
+        # never disagree with what the risk manager enforces.
+        "limits": {
+            "max_trades_per_day": RiskLimits.MAX_TRADES_PER_DAY,
+            "max_consecutive_losses": RiskLimits.MAX_CONSECUTIVE_LOSSES,
+            "cooldown_minutes": RiskLimits.COOLDOWN_MINUTES,
+            "daily_loss_limit_pct": RiskLimits.DAILY_LOSS_LIMIT_PCT,
+            "weekly_loss_limit_pct": RiskLimits.WEEKLY_LOSS_LIMIT_PCT,
+            "max_concurrent_positions": RiskLimits.MAX_CONCURRENT_POSITIONS,
         },
         "position": position,
         "run": run,
@@ -133,6 +151,7 @@ def build_snapshot(settings: Settings, nodes: "TradingNodes",
     # Scanner agent only: the latest scan, best first, with each coin's fate.
     scan = getattr(nodes, "last_scan", None)
     if scan is not None:
+        snapshot["scan_ts"] = getattr(nodes, "last_scan_ts", 0)
         snapshot["scan"] = [
             {
                 "coin": c.market.coin,
@@ -153,11 +172,15 @@ class MonitorServer:
 
     def __init__(self, settings: Settings, snapshot_fn: Callable[[], dict[str, Any]],
                  trades_fn: Callable[[int], list[dict[str, Any]]],
-                 halt_fn: Callable[[str], None]) -> None:
+                 halt_fn: Callable[[str], None],
+                 chart_fn: Callable[[str, int], dict[str, Any]] | None = None) -> None:
         self.settings = settings
         self.snapshot_fn = snapshot_fn
         self.trades_fn = trades_fn
         self.halt_fn = halt_fn
+        # Read-only drawing payload (maya.viz.chart). Optional so a server
+        # built without it keeps working; /api/chart is then a 404.
+        self.chart_fn = chart_fn
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -230,8 +253,10 @@ def _make_handler(server: MonitorServer):
         # -- plumbing --------------------------------------------------- #
         def log_message(self, fmt: str, *args: Any) -> None:
             # BaseHTTPRequestHandler logs every request to stderr, which would
-            # drown the trading log at a 2s dashboard poll.
-            logger.debug("api {}", fmt % args)
+            # drown the trading log at a 2s dashboard poll. The request line
+            # carries "?token=..." when the dashboard is opened from a link,
+            # so the token is scrubbed before anything is logged.
+            logger.debug("api {}", (fmt % args).replace(server.token, "<token>"))
 
         def _send(self, status: int, body: bytes, content_type: str) -> None:
             self.send_response(status)
@@ -277,6 +302,18 @@ def _make_handler(server: MonitorServer):
                 if route == "/api/trades":
                     limit = int(query.get("limit", "20"))
                     return self._json(200, {"ok": True, "data": server.trades_fn(limit)})
+                if route == "/api/chart" and server.chart_fn is not None:
+                    # Bounded so a typo cannot make the trading process draw
+                    # thousands of bars on every dashboard refresh.
+                    bars = max(20, min(int(query.get("bars", "150")), 300))
+                    tf = unquote(query.get("tf", "base"))
+                    coin = unquote(query.get("coin", "")) or None
+                    try:
+                        data = (server.chart_fn(tf, bars, coin) if coin
+                                else server.chart_fn(tf, bars))
+                    except ValueError as exc:
+                        return self._json(400, {"ok": False, "error": str(exc)})
+                    return self._json(200, {"ok": True, "data": data})
             except Exception as exc:  # noqa: BLE001 - never 500 silently
                 logger.warning("monitoring API error on {}: {}", route, exc)
                 return self._json(500, {"ok": False, "error": str(exc)})
@@ -293,14 +330,22 @@ def _make_handler(server: MonitorServer):
                 return self._json(401, {"ok": False, "error": "unauthorized"})
 
             if parsed.path.rstrip("/") == "/api/halt":
-                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = -1
+                # The body is only a short reason. Refuse anything large rather
+                # than read an unbounded amount into the trading process.
+                if not 0 <= length <= MAX_HALT_BODY:
+                    return self._json(413, {"ok": False, "error": "body too large"})
                 raw = self.rfile.read(length) if length else b"{}"
                 try:
                     reason = (json.loads(raw or b"{}").get("reason")
                               or "halted from dashboard")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, AttributeError):
                     reason = "halted from dashboard"
-                server.halt_fn(str(reason))
+                # The halt still happens; only the stored text is bounded.
+                server.halt_fn(str(reason)[:MAX_HALT_REASON])
                 logger.critical("HALT requested via monitoring API: {}", reason)
                 return self._json(200, {"ok": True, "data": server.snapshot_fn()})
 
@@ -360,6 +405,12 @@ DASHBOARD_HTML = """<!doctype html>
   td{padding:7px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums}
   .flat{color:var(--dim);text-align:center;padding:14px 0;font-size:14px}
   footer{color:var(--dim);font-size:12px;text-align:center;margin-top:14px}
+  canvas{width:100%;height:280px;display:block}
+  .tfs{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .tfs a{font-size:12px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);
+         color:var(--dim);text-decoration:none}
+  .tfs a.on{color:var(--fg);border-color:var(--accent)}
+  .notes{font-size:12px;color:var(--dim);margin-top:6px}
 </style></head><body>
 <header>
   <h1>Maya</h1>
@@ -371,6 +422,11 @@ DASHBOARD_HTML = """<!doctype html>
 const qs = new URLSearchParams(location.search);
 const token = qs.get('token') || '';
 const money = n => (n<0?'-':'') + '$' + Math.abs(n).toFixed(2);
+// Every string from data goes through esc() before it reaches innerHTML: coin
+// names come from the venue's public list and halt reasons from a request, so
+// unescaped they could run script on a page that holds the token.
+const esc = v => String(v ?? '').replace(/[&<>"']/g,
+  ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const el = document.getElementById('app');
 
 async function api(path, opts={}){
@@ -381,7 +437,88 @@ async function api(path, opts={}){
   return j.data;
 }
 
-function render(d, trades){
+let chartTf = 'base';
+
+function chartCard(ch){
+  if(!ch) return '';
+  const tfs = (ch.available || []).map((t, i) => {
+    const key = i === 0 ? 'base' : t;
+    return `<a href="#" data-tf="${esc(key)}" class="${key === chartTf ? 'on' : ''}">${esc(t)}</a>`;
+  }).join('');
+  const dr = ch.drawings || {};
+  const notes = [];
+  if(dr.formation) notes.push(dr.formation.replace(/_/g, ' '));
+  (dr.patterns || []).forEach(p => notes.push(`${p.name.replace(/_/g, ' ')} (${p.status})`));
+  (dr.breakouts || []).forEach(b => notes.push(`breakout ${b.direction}: ${b.kind.replace(/_/g, ' ')}`));
+  return `<div class="card"><h2>Chart — ${esc(ch.symbol)} ${esc(ch.timeframe)}</h2><div class="tfs">${tfs}</div>
+    <canvas id="chart"></canvas>
+    <div class="notes">${notes.length ? esc(notes.join(' · ')) : 'no pattern on this chart'}
+    — drawings are readings, not trade signals.</div></div>`;
+}
+
+function drawChart(ch){
+  const cv = document.getElementById('chart');
+  if(!cv || !ch || !ch.candles.length) return;
+  const css = getComputedStyle(document.documentElement);
+  const col = k => css.getPropertyValue(k).trim();
+  const UP = col('--up'), DN = col('--down'), DIM = col('--dim'), AC = col('--accent'), WR = col('--warn');
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const rows = ch.candles, n = rows.length, padR = 54;
+  const idx = {}; rows.forEach((r, i) => idx[r[0]] = i);
+  const step = n > 1 ? rows[1][0] - rows[0][0] : 60000;
+  const xi = i => (i + 0.5) * (W - padR) / n;
+  const xt = t => xi(t in idx ? idx[t] : (t - rows[0][0]) / step);
+  let lo = Math.min(...rows.map(r => r[3])), hi = Math.max(...rows.map(r => r[2]));
+  const pos = ch.position;
+  if(pos) [pos.entry, pos.stop_loss, pos.take_profit].forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); });
+  const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+  const y = p => H - (p - lo) / (hi - lo) * H;
+  const inView = p => p >= lo && p <= hi;
+  const label = (txt, py, c) => { g.fillStyle = c; g.font = '10px system-ui'; g.fillText(txt, W - padR + 3, py + 3); };
+  const seg = (pts, c, w, dash) => { g.strokeStyle = c; g.lineWidth = w; g.setLineDash(dash || []);
+    g.beginPath(); pts.forEach(([t, v], k) => k ? g.lineTo(xt(t), y(v)) : g.moveTo(xt(t), y(v))); g.stroke(); g.setLineDash([]); };
+
+  (ch.zones || []).forEach(z => {
+    g.globalAlpha = 0.08 + 0.2 * z.strength; g.fillStyle = z.kind === 'support' ? UP : DN;
+    g.fillRect(0, y(z.upper), W - padR, Math.max(y(z.lower) - y(z.upper), 1)); g.globalAlpha = 1;
+    if(inView(z.center)) label(`${z.kind[0].toUpperCase()}x${z.touches}`, y(z.center), z.kind === 'support' ? UP : DN);
+  });
+  const bw = Math.max((W - padR) / n * 0.65, 1);
+  rows.forEach((r, i) => {
+    const [, o, h, l, c] = r, x = xi(i); g.strokeStyle = g.fillStyle = c >= o ? UP : DN;
+    g.lineWidth = 1; g.beginPath(); g.moveTo(x, y(h)); g.lineTo(x, y(l)); g.stroke();
+    g.fillRect(x - bw / 2, y(Math.max(o, c)), bw, Math.max(Math.abs(y(o) - y(c)), 1));
+  });
+  const dr = ch.drawings || {};
+  if(dr.fib) Object.entries(dr.fib.levels).forEach(([k, v]) => {
+    if(!inView(v)) return; seg([[rows[0][0], v], [rows[n - 1][0], v]], WR, 0.7, [2, 4]); label('fib ' + k, y(v), WR);
+  });
+  if(dr.support_line) seg(dr.support_line.points, UP, 1.6);
+  if(dr.resistance_line) seg(dr.resistance_line.points, DN, 1.6);
+  (dr.patterns || []).forEach(p => {
+    const c = p.direction === 'bullish' ? UP : DN;
+    seg(p.points, c, 1.2, [5, 3]);
+    if(p.neckline) seg(p.neckline, c, 1, [8, 3, 2, 3]);
+    const [t, v] = p.points[p.points.length - 1];
+    g.fillStyle = c; g.font = '11px system-ui'; g.fillText(p.name.replace(/_/g, ' '), Math.min(xt(t), W - padR - 110), y(v) - 6);
+  });
+  if(pos) [['entry', pos.entry, AC], ['SL', pos.stop_loss, DN], ['TP', pos.take_profit, UP]].forEach(([k, v, c]) => {
+    seg([[rows[0][0], v], [rows[n - 1][0], v]], c, 1.2); label(k, y(v), c);
+  });
+  (dr.breakouts || []).forEach(b => {
+    if(!inView(b.level)) return; const x = xi(n - 1), py = y(b.level);
+    g.fillStyle = AC; g.beginPath();
+    if(b.direction === 'up'){ g.moveTo(x, py - 14); g.lineTo(x - 5, py - 6); g.lineTo(x + 5, py - 6); }
+    else { g.moveTo(x, py + 14); g.lineTo(x - 5, py + 6); g.lineTo(x + 5, py + 6); }
+    g.fill();
+  });
+  if(dr.formation){ g.fillStyle = AC; g.font = 'bold 11px system-ui'; g.fillText(dr.formation.replace(/_/g, ' '), 6, 14); }
+  label(rows[n - 1][4].toFixed(2), y(rows[n - 1][4]), DIM);
+}
+
+function render(d, trades, ch){
   const a = d.account, p = d.position, c = d.config;
   document.getElementById('cfg').textContent =
     `${c.mode} · ${c.venue} · ${c.agent === 'scanner' ? 'scanner' : c.symbol} ${c.timeframe} · ${c.leverage}x`;
@@ -393,24 +530,26 @@ function render(d, trades){
     <div class="equity">${money(a.equity)}</div>
     <div class="delta ${cls}">${sign}${money(a.pnl_usdt)} (${sign}${a.pnl_pct.toFixed(2)}%)</div>
     <div class="kv" style="margin-top:10px"><span>System</span>
-      <span><span class="state ${a.state}">${a.state.toUpperCase()}</span></span></div>
+      <span><span class="state ${esc(a.state)}">${esc(a.state.toUpperCase())}</span></span></div>
     ${a.halt_reasons.length ? `<div class="kv"><span>Reason</span>
-      <span class="down">${a.halt_reasons.join(', ')}</span></div>` : ''}
+      <span class="down">${esc(a.halt_reasons.join(', '))}</span></div>` : ''}
   </div>`;
 
   html += p ? `<div class="card">
     <h2>Open position</h2>
-    <div class="kv"><span>${p.direction.toUpperCase()} ${p.symbol}</span>
-      <span>${p.leverage}x · ${p.setup}</span></div>
+    <div class="kv"><span>${esc(p.direction.toUpperCase())} ${esc(p.symbol)}</span>
+      <span>${esc(p.leverage)}x · ${esc(p.setup)}</span></div>
     <div class="grid" style="margin-top:6px">
       <div class="kv"><span>Entry</span><span>${p.entry_price.toFixed(2)}</span></div>
-      <div class="kv"><span>Size</span><span>${p.quantity}</span></div>
+      <div class="kv"><span>Size</span><span>${esc(p.quantity)}</span></div>
       <div class="kv"><span>Stop</span><span class="down">${p.stop_loss.toFixed(2)}</span></div>
       <div class="kv"><span>Target</span><span class="up">${p.take_profit.toFixed(2)}</span></div>
       <div class="kv"><span>Notional</span><span>${money(p.notional)}</span></div>
       <div class="kv"><span>Breakeven</span><span>${p.moved_to_breakeven?'yes':'no'}</span></div>
     </div></div>`
     : `<div class="card"><h2>Open position</h2><div class="flat">Flat — no open position</div></div>`;
+
+  html += chartCard(ch);
 
   const r = d.run;
   html += `<div class="card"><h2>This run</h2>
@@ -425,20 +564,29 @@ function render(d, trades){
 
   if(trades && trades.length){
     html += `<div class="card"><h2>Recent trades</h2><table>
-      <tr><th>Setup</th><th>Side</th><th style="text-align:right">PnL</th></tr>
-      ${trades.map(t=>`<tr><td>${t.setup_name}</td><td>${t.direction}</td>
+      <tr><th>Coin</th><th>Setup</th><th>Side</th><th style="text-align:right">PnL</th></tr>
+      ${trades.map(t=>`<tr><td>${esc((t.symbol || '').replace(/USDT$/, ''))}</td>
+        <td>${esc((t.setup_name || '').replace(/_/g, ' '))}</td><td>${esc(t.direction)}</td>
         <td style="text-align:right" class="${t.pnl_usdt>=0?'up':'down'}">
         ${money(t.pnl_usdt)}</td></tr>`).join('')}
     </table></div>`;
   }
 
   const halted = a.state === 'halted';
+  const lifts = halted && a.halt_reasons.length &&
+    a.halt_reasons.every(r => /^(daily|weekly) loss limit/.test(r));
+  const note = !halted ? `Halting stops new trades. It does not close an open position;
+    do that on the exchange.` : lifts ? `Stopped by a loss limit. It lifts by itself when
+    the next day (00:00 UTC) or week starts.` : `Halted. A person must check and restart Maya.`;
   html += `<div class="card"><button id="halt" ${halted?'disabled':''}>
     ${halted?'System halted':'HALT TRADING'}</button>
-    <div class="flat" style="padding-top:10px">Halting stops new trades. It does not
-    close an open position — do that on the exchange.</div></div>`;
+    <div class="flat" style="padding-top:10px">${note}</div></div>`;
 
   el.innerHTML = html;
+  drawChart(ch);
+  document.querySelectorAll('.tfs a').forEach(t => t.onclick = e => {
+    e.preventDefault(); chartTf = t.dataset.tf; tick();
+  });
   const btn = document.getElementById('halt');
   if(btn && !halted) btn.onclick = async () => {
     if(!confirm('Halt trading? The agent will stop opening new positions.')) return;
@@ -451,13 +599,16 @@ function render(d, trades){
 
 async function tick(){
   try{
-    const [d, trades] = await Promise.all([api('/api/status'), api('/api/trades?limit=8')]);
-    render(d, trades);
+    // The chart is optional: an older server without /api/chart, or a
+    // timeframe with too few bars yet, must not blank the rest of the page.
+    const [d, trades, ch] = await Promise.all([api('/api/status'), api('/api/trades?limit=8'),
+      api('/api/chart?tf=' + encodeURIComponent(chartTf) + '&bars=120').catch(() => null)]);
+    render(d, trades, ch);
     document.getElementById('foot').textContent =
       'updated ' + new Date().toLocaleTimeString() + ' · ' + d.candles_processed + ' candles';
   }catch(e){
     document.getElementById('foot').textContent = e.message;
-    if(!el.innerHTML) el.innerHTML = `<div class="card"><div class="flat down">${e.message}</div></div>`;
+    if(!el.innerHTML) el.innerHTML = `<div class="card"><div class="flat down">${esc(e.message)}</div></div>`;
   }
 }
 tick(); setInterval(tick, 3000);

@@ -287,6 +287,28 @@ def test_daily_loss_halt_lifts_on_the_next_day():
     assert rm.screen(_intent(), _DAY).approved
 
 
+def test_runners_keep_going_through_a_halt_that_lifts_by_itself():
+    """Regression: both runners exited on ANY halt, so the process was gone
+    before the next day could lift a daily-loss halt: the 'daily' limit was
+    a permanent shutdown in practice. Only halts a person must clear stop
+    the loop."""
+    from maya.execution.engine import ExecutionEngine
+    from maya.scan_run import should_stop
+
+    execution = ExecutionEngine(_settings())
+    rm = RiskManager(_settings(), equity=1000)
+    rm.check_kill_switch(0)
+    rm.account.equity = rm.account.day_start_equity = 1200.0
+    rm.on_trade_opened()
+    rm.on_trade_closed(-130.0, 0)                       # daily-loss halt
+    assert rm.halt_lifts_by_itself and not should_stop(rm, execution)
+    rm.check_kill_switch(_DAY)                          # the loop is still there to see this
+    assert rm.account.state is SystemState.RUNNING and not rm.halt_lifts_by_itself
+
+    rm.manual_halt()                                    # a person must clear this one
+    assert not rm.halt_lifts_by_itself and should_stop(rm, execution)
+
+
 def test_equity_floor_halt_survives_the_day_rollover():
     """Below the floor is not a condition tomorrow fixes."""
     rm = RiskManager(_settings(), equity=1000)

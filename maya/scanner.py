@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -54,6 +55,7 @@ from maya.signals.models import SignalObject
 from maya.signals.processor import SignalProcessor
 from maya.strategy.engine import StrategyEngine
 from maya.strategy.models import TradeIntent
+from maya.timeframe import timeframe_ms
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 # Fewer closed candles than this and the rolling context (ATR, swings,
@@ -145,12 +147,36 @@ def binance_candle_fetcher(settings: Settings) -> Callable[[str, int], list[Cand
     def fetch(symbol: str, count: int) -> list[Candle]:
         now = ex.milliseconds()
         since = now - (count + 2) * tf_ms
-        rows = _fetch_raw_klines(ex, settings.model_copy(update={"symbol": symbol}), since)
+        sym_settings = settings.model_copy(update={"symbol": symbol})
+        # One request returns at most one page, counted forward from ``since``.
+        # Regression: asking for more than a page returned the OLDEST page,
+        # so a long lookback would have read hours-old candles as "the last
+        # closed candle". Page forward until the present.
+        rows: list[list] = []
+        start = since
+        while True:
+            page = _fetch_raw_klines(ex, sym_settings, start)
+            rows += [r for r in page if not rows or int(r[0]) > int(rows[-1][0])]
+            if not page or int(page[-1][0]) + 2 * tf_ms > now or len(rows) > count + 2:
+                break
+            start = int(page[-1][0]) + tf_ms
         # Drop the bar still forming: a scan must read closed candles only.
         rows = [r for r in rows if int(r[0]) + tf_ms <= now]
         return list(historical_candles(rows[-count:]))
 
     return fetch
+
+
+@dataclass
+class _CoinState:
+    """One coin's readings, kept alive between scans."""
+
+    processor: SignalProcessor
+    strategy: StrategyEngine
+    candles: deque          # recent closed candles, for the desk and the history floor
+    last_ts: int = 0        # newest candle processed
+    intent: TradeIntent | None = None
+    signal: SignalObject | None = None
 
 
 # -- the scanner ------------------------------------------------------------- #
@@ -168,6 +194,7 @@ class Scanner:
         self.fetch_markets = fetch_markets or fetch_hyperliquid_markets
         self.fetch_candles = fetch_candles or binance_candle_fetcher(settings)
         self._llm = StrategyEngine(settings).llm
+        self._state: dict[str, _CoinState] = {}
 
     def universe(self) -> list[Market]:
         """Liquid coins the configured leverage can trade, busiest first.
@@ -185,34 +212,75 @@ class Scanner:
         markets.sort(key=lambda m: m.volume_24h_usd, reverse=True)
         return markets[: self.settings.scan_max_coins]
 
-    def evaluate(self, market: Market, now_ts: int) -> Candidate:
-        cand = Candidate(market=market)
-        try:
-            candles = self.fetch_candles(market.binance_symbol, self.settings.scan_lookback)
-        except Exception as exc:  # noqa: BLE001 - one bad coin must not stop the scan
-            cand.rejected = f"no candles ({exc})"
-            return cand
-        if len(candles) < MIN_HISTORY:
-            cand.rejected = f"only {len(candles)} candles"
-            return cand
+    def _advance(self, market: Market, now_ts: int) -> _CoinState:
+        """Bring one coin's readings up to its newest closed candle.
 
-        processor = SignalProcessor(market.binance_symbol,
-                                    htf_timeframes=self.settings.htf_list)
-        strategy = StrategyEngine(self._coin_settings)
-        intent, sig = None, None
-        # Replay history so rolling state (CVD, swings, HTF) is warm; only an
-        # intent on the final, just-closed bar is a live setup. The strategy
-        # logs every intent it sees, which during a replay is hundreds of
-        # stale setups per coin, so its logging is muted until the last bar.
+        Regression: every scan rebuilt each coin from scratch out of the last
+        ``scan_lookback`` candles. Readings that carry state from further back
+        then differed from the continuous run the strategy was measured on:
+        replaying 10 hours of 15 coins, the rebuilt scan missed 2 of 9 setups.
+        Now each coin is warmed once and fed only its new candles afterwards,
+        exactly as the backtest and the single-coin agent run. A gap the
+        catch-up fetch cannot bridge (a coin off the list for a while, a long
+        outage) rebuilds that coin, because a hole in the history would be
+        worse than a fresh warm-up.
+        """
+        sym, tf_ms = market.binance_symbol, timeframe_ms(self.settings.timeframe)
+        st = self._state.get(sym)
+        if st is not None:
+            behind = max(0, (now_ts - st.last_ts) // tf_ms)
+            fresh = self.fetch_candles(sym, int(min(self.settings.scan_lookback, behind + 5)))
+            new = [c for c in fresh if c.timestamp > st.last_ts]
+            if new and new[0].timestamp > st.last_ts + tf_ms:
+                st = None                       # a hole: rebuild below
+            else:
+                self._feed(st, new, market)
+                return st
+        candles = self.fetch_candles(sym, self.settings.scan_lookback)
+        st = _CoinState(SignalProcessor(sym, htf_timeframes=self.settings.htf_list),
+                        StrategyEngine(self._coin_settings),
+                        deque(maxlen=max(self.settings.scan_lookback, 200)))
+        self._feed(st, candles, market)
+        self._state[sym] = st
+        return st
+
+    @staticmethod
+    def _feed(st: _CoinState, candles: list[Candle], market: Market) -> None:
+        """Process candles in order; the intent kept is the last candle's.
+
+        The strategy logs every intent it sees, which during a warm-up is
+        hundreds of stale setups, so its logging is muted until the last bar.
+        """
         logger.disable("maya.strategy")
         try:
             for i, candle in enumerate(candles):
-                sig = processor.process(candle, funding_rate=market.funding_rate)
                 if i == len(candles) - 1:
                     logger.enable("maya.strategy")
-                intent = strategy.evaluate(sig)
+                st.signal = st.processor.process(candle, funding_rate=market.funding_rate)
+                st.intent = st.strategy.evaluate(st.signal)
+                st.candles.append(candle)
+                st.last_ts = candle.timestamp
         finally:
             logger.enable("maya.strategy")
+
+    def evaluate(self, market: Market, now_ts: int) -> Candidate:
+        cand = Candidate(market=market)
+        try:
+            st = self._advance(market, now_ts)
+        except Exception as exc:  # noqa: BLE001 - one bad coin must not stop the scan
+            self._state.pop(market.binance_symbol, None)
+            cand.rejected = f"no candles ({exc})"
+            return cand
+        if len(st.candles) < MIN_HISTORY:
+            cand.rejected = f"only {len(st.candles)} candles"
+            return cand
+        # A setup counts only on the newest closed candle. If Binance has not
+        # published the last bar yet, the reading is a candle old and must not
+        # be acted on a second time.
+        if st.last_ts + 2 * timeframe_ms(self.settings.timeframe) <= now_ts:
+            cand.rejected = "no new closed candle yet"
+            return cand
+        candles, sig, intent = list(st.candles), st.signal, st.intent
         cand.patterns = list(sig.patterns) if sig else []
         cand.signal = sig
         if intent is None:
@@ -247,6 +315,10 @@ class Scanner:
             logger.error("could not load the market universe: {}", exc)
             return []
         results = [self.evaluate(m, now_ts) for m in markets]
+        # Forget coins that left the universe; one that returns is rebuilt.
+        keep = {m.binance_symbol for m in markets}
+        for sym in [s for s in self._state if s not in keep]:
+            del self._state[sym]
         results.sort(key=lambda c: (c.tradable, c.net_rr,
                                     c.intent.confluence_score if c.intent else 0),
                      reverse=True)

@@ -1,0 +1,71 @@
+{
+  "test_period": "2024-01-01 00:00:00+00:00 -> 2025-12-30 20:00:00+00:00",
+  "decisions": 4380,
+  "horizon_h": 4,
+  "fee_per_side": 0.0005,
+  "thresholds": [
+    0.45,
+    0.55
+  ],
+  "up_rate": 0.513,
+  "long_perp_hold": {
+    "total_return_%": 75.1,
+    "sharpe": 0.82,
+    "max_drawdown_%": -35.1
+  },
+  "models": {
+    "gbm": {
+      "auc": 0.5515,
+      "traded_%": 50.7,
+      "hit_rate_when_traded": 0.555,
+      "fees_paid_%": 139.2,
+      "funding_paid_%": 0.67,
+      "gross_return_%_no_costs": 74.4,
+      "total_return_%": -56.9,
+      "sharpe": -0.99,
+      "max_drawdown_%": -70.4,
+      "return_by_quarter_%": {
+        "2024Q1": 30.1,
+        "2024Q2": -16.0,
+        "2024Q3": -12.8,
+        "2024Q4": -20.8,
+        "2025Q1": -24.0,
+        "2025Q2": 4.1,
+        "2025Q3": -5.6,
+        "2025Q4": -23.6
+      }
+    },
+    "logit": {
+      "auc": 0.545,
+      "traded_%": 35.7,
+      "hit_rate_when_traded": 0.5611,
+      "fees_paid_%": 104.8,
+      "funding_paid_%": 0.92,
+      "gross_return_%_no_costs": 69.7,
+      "total_return_%": -41.0,
+      "sharpe": -0.67,
+      "max_drawdown_%": -62.0,
+      "return_by_quarter_%": {
+        "2024Q1": 16.0,
+        "2024Q2": -21.3,
+        "2024Q3": -35.8,
+        "2024Q4": -5.9,
+        "2025Q1": 10.5,
+        "2025Q2": 18.9,
+        "2025Q3": -6.5,
+        "2025Q4": -13.0
+      }
+    }
+  },
+  "leak_check_shuffled_auc_gbm": 0.5067,
+  "top_features_in_sample": {
+    "ret_4h": 0.0449,
+    "ret_24h": 0.0233,
+    "funding_avg3": 0.014,
+    "volume_z168": 0.0115,
+    "ret_1h": 0.0099,
+    "ret_72h": 0.0087,
+    "vol_24h": 0.0081,
+    "funding_chg": 0.0071
+  }
+}

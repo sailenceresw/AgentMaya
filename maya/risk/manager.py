@@ -207,6 +207,20 @@ class RiskManager:
     def manual_halt(self) -> None:
         self._halt("manual halt command")
 
+    @property
+    def halt_lifts_by_itself(self) -> bool:
+        """True when every reason for the halt is a period loss limit.
+
+        Those clear when the next day or week starts (``roll_periods``), so a
+        runner must keep its loop alive through them. Regression: both
+        runners exited on any halt, which made the "daily" loss limit a
+        permanent shutdown. Any other reason (equity floor, stale feed,
+        manual) still needs a person.
+        """
+        reasons = self.account.halt_reasons
+        return (self.account.state is SystemState.HALTED and bool(reasons)
+                and all(r.startswith((self._DAILY_HALT, self._WEEKLY_HALT)) for r in reasons))
+
     # -- per-intent screening ---------------------------------------------- #
     def screen(self, intent: TradeIntent, now_ts: int) -> RiskDecision:
         # Idempotent, and screen() is also called directly (tests, tooling), so

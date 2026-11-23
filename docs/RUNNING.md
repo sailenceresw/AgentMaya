@@ -540,10 +540,27 @@ the venue directly with `hyperliquid-python-sdk`, so a call takes about as
 long as an HTTP request. Its purpose is to test order handling on testnet.
 It is not evidence that the strategy makes money.
 
-**Not verified against the venue.** Method names and signatures were checked
-against hyperliquid-python-sdk 0.24.0. Nothing here has been run on the
-Hyperliquid testnet; the tests use a stand-in venue. Run the smoke test below
-before anything else.
+**Verified on testnet only, never on mainnet.** Method names and signatures
+were checked against hyperliquid-python-sdk 0.24.0, and the unit tests use a
+stand-in venue. Run the smoke test below before anything else.
+
+**Checked against the testnet (Nov 2026).** Read-only first: the info calls
+the preflight makes (`user_state`, `all_mids`, `frontend_open_orders`, `meta`,
+`spot_user_state`, `query_user_abstraction_state`). A **unified account**
+holds its perp collateral as spot USDC, so its perp account value reads 0
+while flat. The preflight now adds the spot USDC balance for such accounts;
+before that, a funded account was reported as unfunded.
+
+Then signed orders, 18–23 Nov 2026: the smoke test placed and cancelled an
+order, and the multi-coin scanner opened and closed 14 trades with market
+entries and stops and targets resting at the venue. That run found real
+bugs: a refused close was journaled as a closed win, an unprotected HYPE
+short was liquidated, and exit prices were read from the wrong fill. The
+venue's own fill history showed about −$30 after fees while the journal
+showed a profit. The fixes and their regression tests are listed in the
+README ("Testnet run, 18–22 Nov 2026"). Trades journaled before those fixes
+are not trustworthy; compare with the venue's fill history, not the journal.
+Fourteen trades say the order path works. They do not say the strategy earns.
 
 Set up:
 
@@ -591,6 +608,29 @@ venue. What covers that window:
   position by itself; a position that has a stop still stops the start with
   the usual state-mismatch error.
 - Moving a stop places the new one before cancelling the old one.
+
+**The testnet is not the real market.** It has its own thin order book and
+its own price. Measured over six hours on 1m bars (Nov 2026), testnet BTC sat
+between 4 and 136 bps under the mainnet price (median 92) and the gap moved a
+median 5 bps a minute, 16 bps at the 95th percentile; ETH and SOL were
+similar. Signals are built on real-market candles, so:
+
+- With `MAYA_HL_TESTNET_PRICE_MAP=true` (the default) the entry, stop and
+  target are multiplied by testnet mid / mainnet mid, read when the trade
+  opens, and the fill is reported back on the signal's scale. Without it a
+  long's stop lands above the testnet price and a short's entry never fills.
+  If either price cannot be read, or they differ by more than 20%, the entry
+  is skipped. The map is never applied on mainnet.
+- A stop of 15 to 50 bps is the same size as the gap's own movement. A trade
+  can be stopped on testnet while the real market never touched the stop, and
+  the reverse. The journal follows the real-market candles; the Hyperliquid UI
+  shows what the testnet did. They will disagree trade by trade. Testnet PnL
+  says the orders work. It does not say what the strategy earns.
+
+`MAYA_PERPS_ORDER_TYPE=market` is honoured on this path: the entry is an IOC
+limit at the mid plus or minus `MAYA_PERPS_MAX_SLIPPAGE_BPS`, and what does
+not fill at once is cancelled by the venue. A resting limit at the mid rarely
+fills on the testnet book inside `MAYA_HL_ENTRY_TIMEOUT_S`.
 
 **What is logged.** Every fill logs price, size, fee and latency next to the
 price the paper broker would have assumed, with the difference in bps.
@@ -646,6 +686,60 @@ installed, and a refusal writes no registry row.
 
 Not verified: the loading code follows the Kronos README and has never been
 run against the real model. Tests use a stand-in predictor.
+
+## Chart drawings: what Maya sees
+
+Maya draws what a discretionary trader would draw, mechanically, from closed
+candles. The drawings appear on the dashboard and in `python -m maya.chart`.
+
+- **Trendlines**: the best unbroken support line through recent swing lows and
+  resistance line through swing highs. Anchors must be at least 10 bars apart,
+  no close may cross the line between its first anchor and the previous bar,
+  and the line must end near the traded range.
+- **Formations between the two lines**: ascending, descending and horizontal
+  channels; ascending, descending and symmetrical triangles; rising and
+  falling wedges.
+- **Patterns**: double top and bottom, head and shoulders and its inverse,
+  and bull and bear flags. Each has a neckline, a measured-move target, and a
+  status of `forming` or `confirmed`.
+- **Fibonacci** retracements (0.236–0.786) and extensions (1.272, 1.618) on
+  the window's major leg.
+- **Breakouts**: the latest close crossing a trendline, a strong Atlas zone,
+  or a confirmed pattern's neckline that the previous close had not crossed.
+- **Atlas zones**: support and resistance zones with at least 2 touches, and
+  the open position's entry, SL and TP.
+
+```bash
+python -m maya.chart --symbol BTCUSDT --timeframe 15m              # live, latest 200 closed bars
+python -m maya.chart --symbol ETHUSDT --timeframe 1h --bars 300 --out eth.png --json eth.json
+python -m maya.chart --timeframe 15m --start 2024-08-10 --end 2026-08-09   # from the cache
+```
+
+On the dashboard (`MAYA_API_ENABLED=true`), the **Chart** card draws the
+agent's own candles. Use the timeframe chips to switch between the base
+timeframe and each higher timeframe (`MAYA_HTF_TIMEFRAMES`). The data comes
+from `GET /api/chart?tf=15m&bars=120`, which needs the token and is capped at
+300 bars.
+
+**These are readings, not signals.** No setup, desk agent or risk rule reads
+them. They are computed only when the dashboard or the CLI asks, never on the
+candle path, so they cannot change or slow trading. Pivots need 2 bars on each
+side (the same rule as `technicals.swing_points`), so nothing here sees a turn
+before it has happened. Tolerances scale with the window's median bar range,
+so the same code reads 1m and 1d charts.
+
+Whether a drawing predicts anything is measured separately:
+`python -m maya.research run chart_breakout_15m`. That hypothesis trades a
+15m close through a trendline or a confirmed neckline and holds for 4 bars,
+with taker costs.
+
+What is verified: the unit tests build each shape from invented prices, check
+that confirmed pivots never move when new bars arrive, check that drawing
+leaves the agent's state untouched, and cover the API route. One live BTC 15m
+chart and one ETH 1h chart were checked by eye on 2026-11-17, which led to
+the minimum anchor gap and the in-play rule. Not verified: the phone apps
+don't show the chart yet, since only the web dashboard draws it, and none of
+the drawings has been measured as predictive.
 
 ## Post-only entry simulation (paper, sim and backtest)
 
@@ -885,6 +979,68 @@ code is type-checked against Android API stubs. **Not verified here:** neither
 app has been compiled with its real SDK or run on a device in this repository's
 CI (there is no Xcode or Android SDK in it) — build it once yourself before
 relying on it.
+
+## Telegram alerts and commands
+
+`maya/api/telegram.py` is the Telegram side of Layer 7. It watches the
+running agent and messages you in plain words when a trade opens (long or
+short, which coin, why, and what the stop can lose and the target can gain,
+with a chart in single-coin mode), when the stop moves to breakeven, when a
+trade closes with its PnL and the new balance, and when the system pauses,
+halts or resumes, with the reason and when it lifts. It also messages you
+when Maya starts and stops, and after 00:00 UTC with the previous day's
+trades and PnL.
+
+The commands are also tap buttons under the chat box and a menu when you
+type `/`. Typing the plain word (`status`, `today`, ...) works too.
+
+| Command | Does |
+|---|---|
+| `/status` | balance, PnL, state, open trade with its risk and target in dollars |
+| `/today` | today's (UTC) closed trades, wins, losses, PnL and fees |
+| `/trades` | last 5 closed trades |
+| `/scan` | scanner only: each coin's latest reading and why it was or was not traded |
+| `/limits` | each hard limit and how close Maya is to it; when a pause ends |
+| `/stats` | win rate, PnL, fees, profit factor for this run and all time |
+| `/chart [tf]` | chart image with Maya's drawings, e.g. `/chart 15m` (single-coin agent) |
+| `/explain` | what long, short, stop, target, R:R, breakeven, halt and the setups mean |
+| `/halt confirm` | stop opening new trades. An open position is **not** closed. |
+
+There is no resume command and no open-trade command, the same rule as the
+dashboard. `/halt` without `confirm` only explains what it would do, and halt
+is deliberately not a button, so a stray tap cannot stop trading.
+
+Set it up once:
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and put the token in
+   `.env` as `MAYA_TELEGRAM_BOT_TOKEN`.
+2. Send your new bot any message.
+3. `python -m maya.check_telegram` prints the bot's name and your chat id.
+   Put the id in `MAYA_TELEGRAM_CHAT_IDS`.
+4. `python -m maya.check_telegram --send` sends a test message.
+5. Set `MAYA_TELEGRAM_ENABLED=true` and start `python -m maya` (or
+   `python -m maya.scan_run`).
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `MAYA_TELEGRAM_ENABLED` | `false` | Run the bot at all |
+| `MAYA_TELEGRAM_BOT_TOKEN` | *(blank)* | From @BotFather. A secret: it is never logged |
+| `MAYA_TELEGRAM_CHAT_IDS` | *(blank)* | Comma-separated chats it answers; it refuses to start without one |
+| `MAYA_TELEGRAM_POLL_S` | `5` | Seconds between checks for changes |
+| `MAYA_TELEGRAM_CHART_ON_OPEN` | `true` | Attach a chart to "position opened" alerts |
+| `MAYA_TELEGRAM_DAILY_SUMMARY` | `true` | After 00:00 UTC, send the previous day's trades and PnL |
+
+Safety: the bot runs on its own threads and only reads the same snapshot the
+dashboard reads, so a slow or unreachable Telegram delays alerts but never the
+candle loop. Messages from chats not on the list get no reply. Messages sent
+while Maya was not running are discarded at start, so yesterday's
+`/halt confirm` can't halt today's run. A failure to start is logged and
+trading continues. The scanner agent has no single chart, so `/chart` there
+replies with an explanation.
+
+**Not verified here:** the tests use a fake Telegram transport whose replies
+follow the Bot API documentation. No real bot has been run from this
+repository. `python -m maya.check_telegram --send` is the first real check.
 
 ## Position monitoring (testnet/live)
 
@@ -1305,11 +1461,13 @@ and reports the spec §14.1 go/no-go gate.
 | Post-only entry simulation | off | unit tests; fill probability is an assumption |
 | Kronos input | off | unit tests with a stand-in predictor; real model never loaded |
 | Hyperliquid SDK broker | off | unit tests with a fake venue; never run against the venue |
+| Chart drawings (trendlines, patterns, Fibonacci, breakouts) and `/api/chart` | drawn on request, never traded | unit tests on invented shapes; two live charts checked by eye; `chart_breakout_15m` not run |
 
 **Intentionally minimal (extend before live use):** funding rate / OI /
 long-short ratio and the news-blackout calendar are placeholders; order-book
 depth and liquidation streams from spec §4.2 aren't subscribed to yet
-(kline + aggTrade only); Telegram/dashboard (L7 UI) is logging-only. State
+(kline + aggTrade only). The L7 UI is the dashboard plus the Telegram bot
+(see "Telegram alerts and commands"), which is unverified against a real bot. State
 reconciliation (spec §8.4) covers the startup gate and the ongoing position
 monitor, but doesn't do a full order-book-level audit, and equity is
 re-seeded from the exchange balance rather than independently cross-checked

@@ -34,6 +34,7 @@ MAYA_SCENARIO=true MAYA_MAX_CANDLES=0 python -m maya  # scripted demo trade, end
 python -m maya.scanner                                # multi-coin scan (needs MAYA_MODE=paper)
 python -m maya.backtest.sweep --symbols ... --timeframes 15m,1h   # fee-aware measurement
 python -m maya.data.download ...                      # fetch/import backtest data once
+python -m maya.chart --symbol BTCUSDT --timeframe 15m  # draw what Maya sees (PNG)
 ```
 
 Tests never touch the network: exchanges, the `mm` CLI and the Anthropic
@@ -51,7 +52,10 @@ maya/
   data/            feeds (sim/scenario/ccxt REST/websocket), scheduler, watchdog, download
   signals/         CVD, volume profile, absorption, AMT, ATR, patterns, HTF folding,
                    mtf.py (15m bias, 15s trigger bars; both off by default),
-                   kronos_signal.py (optional forecast reading for Iris, off by default)
+                   kronos_signal.py (optional forecast reading for Iris, off by default),
+                   chart_patterns.py (trendlines/formations/patterns/fib/breakouts;
+                   readings only, nothing trades on them)
+  viz/chart.py     chart payload + PNG renderer; /api/chart and `python -m maya.chart`
   strategy/        3 setups, confluence, optional LLM veto (Claude, structured verdict)
   agents/          the desk (Atlas/Echo/Flow/Sentinel) — analysis/veto only, never a signal
   risk/            RiskManager: hard limits, kill switch, sizing, liquidation + fee gates
@@ -63,8 +67,13 @@ maya/
   backtest/        runner (same graph as live), sweep, metrics, plot, Monte Carlo, funding
   research/        hypothesis harness: holdout, registry, corrected t threshold, cost presets
   api/server.py    token-protected monitoring API + phone dashboard + halt switch
-  check_connection.py / check_metamask.py / check_hyperliquid.py
-                   startup preflights (Binance / Hyperliquid via mm / Hyperliquid via SDK)
+  api/telegram.py  Telegram bot: alerts + /status /trades /chart /halt confirm (off by default;
+                   allow-listed chats only; stdlib HTTP; tests use a fake transport)
+  check_connection.py / check_metamask.py / check_hyperliquid.py / check_telegram.py
+                   startup preflights (Binance / Hyperliquid via mm / Hyperliquid via SDK /
+                   Telegram bot token + chat id)
+ml/                standalone BTC direction ML experiments, not used by the agent; every
+                   model failed the 2026 holdout (README, "Machine-learning experiments")
 android/           Android phone monitor for the API (Java, no dependencies)
 ios/               iOS phone monitor (SwiftUI app package, iOS 17)
 tests/             one test module per area; regression tests name the bug they pin

@@ -1,0 +1,129 @@
+{
+  "horizon_h": 24,
+  "fee_per_side": 0.0005,
+  "maker_fee_sensitivity": 0.0002,
+  "thresholds": [
+    0.45,
+    0.55
+  ],
+  "holdout_unlocked": true,
+  "development": {
+    "period": "2024-01-01 00:00:00+00:00 -> 2025-12-31 00:00:00+00:00",
+    "decisions": 731,
+    "up_rate": 0.5116,
+    "long_perp_hold": {
+      "total_return_%": 76.2,
+      "sharpe": 0.84,
+      "max_drawdown_%": -32.6
+    },
+    "models": {
+      "gbm": {
+        "auc": 0.5426,
+        "traded_%": 56.6,
+        "position_changes": 428,
+        "hit_rate_when_traded": 0.5411,
+        "fees_paid_%": 25.7,
+        "funding_paid_%": 1.01,
+        "gross_return_%_no_costs": 62.2,
+        "total_return_%": 24.2,
+        "sharpe": 0.48,
+        "max_drawdown_%": -38.4,
+        "sensitivity_total_return_%_at_maker_fee": 45.0,
+        "return_by_quarter_%": {
+          "2024Q1": 11.4,
+          "2024Q2": 6.2,
+          "2024Q3": 19.7,
+          "2024Q4": -8.8,
+          "2025Q1": -18.2,
+          "2025Q2": 28.6,
+          "2025Q3": 2.5,
+          "2025Q4": -10.8
+        }
+      },
+      "logit": {
+        "auc": 0.5553,
+        "traded_%": 45.0,
+        "position_changes": 390,
+        "hit_rate_when_traded": 0.5714,
+        "fees_paid_%": 22.3,
+        "funding_paid_%": 1.8,
+        "gross_return_%_no_costs": 247.6,
+        "total_return_%": 173.3,
+        "sharpe": 1.7,
+        "max_drawdown_%": -16.7,
+        "sensitivity_total_return_%_at_maker_fee": 212.4,
+        "return_by_quarter_%": {
+          "2024Q1": 27.3,
+          "2024Q2": 23.5,
+          "2024Q3": -2.5,
+          "2024Q4": 6.5,
+          "2025Q1": 14.3,
+          "2025Q2": 13.4,
+          "2025Q3": 23.2,
+          "2025Q4": 4.7
+        }
+      }
+    }
+  },
+  "holdout": {
+    "period": "2026-01-01 23:00:00+00:00 -> 2026-11-14 23:00:00+00:00",
+    "decisions": 318,
+    "up_rate": 0.4874,
+    "long_perp_hold": {
+      "total_return_%": -28.6,
+      "sharpe": -0.63,
+      "max_drawdown_%": -39.7
+    },
+    "models": {
+      "gbm": {
+        "auc": 0.4729,
+        "traded_%": 44.0,
+        "position_changes": 137,
+        "hit_rate_when_traded": 0.4643,
+        "fees_paid_%": 7.7,
+        "funding_paid_%": 0.38,
+        "gross_return_%_no_costs": -14.7,
+        "total_return_%": -21.3,
+        "sharpe": -0.65,
+        "max_drawdown_%": -32.4,
+        "sensitivity_total_return_%_at_maker_fee": -17.6,
+        "return_by_quarter_%": {
+          "2026Q1": -19.9,
+          "2026Q2": -10.5,
+          "2026Q3": 23.7,
+          "2026Q4": -11.2
+        }
+      },
+      "logit": {
+        "auc": 0.457,
+        "traded_%": 33.0,
+        "position_changes": 144,
+        "hit_rate_when_traded": 0.3905,
+        "fees_paid_%": 7.6,
+        "funding_paid_%": 0.2,
+        "gross_return_%_no_costs": -38.4,
+        "total_return_%": -43.0,
+        "sharpe": -2.03,
+        "max_drawdown_%": -44.0,
+        "sensitivity_total_return_%_at_maker_fee": -40.4,
+        "return_by_quarter_%": {
+          "2026Q1": -27.3,
+          "2026Q2": -12.2,
+          "2026Q3": -0.8,
+          "2026Q4": -10.1
+        }
+      }
+    }
+  },
+  "leak_check_shuffled_auc_gbm": 0.4864,
+  "top_features_in_sample": {
+    "cvd_24h": 0.0489,
+    "dist_sma24": 0.042,
+    "range_pct": 0.0334,
+    "volume_z168": 0.0242,
+    "ret_1h": 0.0224,
+    "vol_24h": 0.0181,
+    "ret_24h": 0.0176,
+    "cvd_4h": 0.0168
+  }
+}

@@ -1,6 +1,10 @@
 # Core graph runtime
 langgraph>=0.2.0
 langchain-core>=0.3.0
+# Pulled in by langsmith (langgraph -> langchain-core -> langsmith). On the
+# development PC, Windows Smart App Control blocked xxhash 4.1.0's DLL on
+# 2026-11-23, so nothing that imports langgraph could start; 3.5.0 loads.
+xxhash>=3.0,<4
 
 # Data / math
 pandas>=2.0
